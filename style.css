@@ -1,0 +1,1150 @@
+/* ============================================================
+   CSS FOUNDATION — Fase 1
+   Tokens Clinical Clean + global base + typography + a11y utils.
+   Selector komponen existing dipertahankan sampai Fase 3.
+   ============================================================ */
+
+/* ---- A. TOKENS ---- */
+:root{
+  --bg: #F0F9FF;
+  --panel: #FFFFFF;
+  --panel-muted: #E8F2F8;
+
+  --ink: #0C4A6E;
+  --ink-strong: #082F49;
+  --ink-soft: #475569;
+  --ink-muted: #64748B;
+
+  --accent: #0284C7;
+  --accent-hover: #0369A1;
+  --accent-soft: #E0F2FE;
+
+  --line: #BAE6FD;
+  --line-soft: #DCE3EA;      /* fallback compatibility */
+
+  --green: #0E7A52;
+  --green-bg: #EAF7F1;
+  --green-line: #BFE6D3;
+
+  --red: #A62B24;
+  --red-bg: #FBEAE9;
+  --red-line: #F0C4C0;
+
+  --amber: #8F5A10;
+  --amber-bg: #FCF3E6;
+  --amber-line: #F1DBB4;
+
+  --vessel-blue: #0070AF;
+
+  --font:
+    'Plus Jakarta Sans',
+    'Inter',
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    Roboto,
+    sans-serif;
+
+  --font-mono:
+    'JetBrains Mono',
+    ui-monospace,
+    "SF Mono",
+    Menlo,
+    monospace;
+
+  /* spacing */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  /* radius */
+  --radius-control: 12px;
+  --radius-card: 20px;
+  --radius-small: 10px;
+
+  /* shadows */
+  --shadow-card: 0 4px 6px rgba(2,132,199,.06);
+  --shadow-card-hover: 0 8px 20px rgba(2,132,199,.10);
+
+  /* focus */
+  --focus-ring: 0 0 0 3px #FFFFFF, 0 0 0 5px #0284C7;
+
+  /* motion tokens — Corporate-Calm (skill motion-design) */
+  --motion-quick: 100ms;
+  --motion-standard: 160ms;
+  --motion-gentle: 300ms;
+
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);   /* MD3 / Snappy UI */
+  --ease-exit: cubic-bezier(0.3, 0, 1, 1);       /* MD3 Accelerate */
+  --ease-color: ease-in-out;
+
+  /* transitions (legacy — dipertahankan untuk selector yang belum migrasi) */
+  --transition-fast: 160ms ease;
+}
+
+/* ---- B. GLOBAL RESET ---- */
+*,
+*::before,
+*::after{
+  box-sizing: border-box;
+}
+
+html{
+  min-width: 320px;
+  scroll-behavior: smooth;
+}
+
+body{
+  margin: 0;
+  min-width: 320px;
+  padding: var(--space-6);
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font);
+  font-size: 13.5px;
+  line-height: 1.5;
+  text-rendering: optimizeLegibility;
+}
+
+button,
+input{
+  font: inherit;
+}
+
+button{
+  color: inherit;
+}
+
+img,
+svg,
+canvas{
+  max-width: 100%;
+}
+
+/* ---- C. TYPOGRAPHY ---- */
+h1{
+  margin: 0;
+  color: var(--ink-strong);
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: -0.025em;
+}
+
+h2{
+  margin: 0;
+  color: var(--ink-strong);
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.subtitle{
+  margin: var(--space-1) 0 0;
+  color: var(--ink-soft);
+  font-size: 12px;
+}
+
+/* ---- D. ACCESSIBILITY UTILITIES ---- */
+.visually-hidden{
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0,0,0,0) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
+}
+
+:where(button, input, summary):focus-visible{
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+button:disabled:focus-visible{
+  box-shadow: none;
+}
+
+/* ---- E. REDUCED MOTION ---- */
+@media (prefers-reduced-motion: reduce){
+  *,
+  *::before,
+  *::after{
+    scroll-behavior: auto !important;
+    transition-duration: .01ms !important;
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+
+  /* Heartbeat SMIL tidak bisa dihentikan CSS — disembunyikan
+     (JS juga memanggil scene.pauseAnimations() sebagai backup) */
+  #scene animateTransform{
+    display: none;
+  }
+
+  /* Particle transitions dimatikan — update opacity instan */
+  #svg-container svg #particles circle{
+    transition: none !important;
+  }
+  #svg-container svg #tissue-tint,
+  #svg-container svg #gut path,
+  #svg-container svg #pancreas path{
+    transition: none !important;
+  }
+
+  button.ctrl:active{
+    transform: none;
+  }
+
+  /* Entrance, settle, disclosure height, dan stagger dihilangkan */
+  .app-header,
+  .kpi-card,
+  .dashboard-card{
+    opacity: 1 !important;
+    transform: none !important;
+  }
+
+  .status-icon svg{
+    animation: none !important;
+  }
+}
+
+/* ---- F. APP SHELL ---- */
+.app{
+  max-width: 1320px;
+  margin: 0 auto;
+}
+
+/* ---- F2. PAGE ENTRANCE (sekali saat load; skip jika reduced motion) ---- */
+html.motion-ready:not(.motion-entered) .app-header,
+html.motion-ready:not(.motion-entered) .kpi-card,
+html.motion-ready:not(.motion-entered) .dashboard-card{
+  opacity: 0;
+  transform: translateY(4px);
+}
+
+html.motion-entered .app-header,
+html.motion-entered .kpi-card,
+html.motion-entered .dashboard-card{
+  opacity: 1;
+  transform: translateY(0);
+  transition:
+    opacity 280ms var(--ease-standard),
+    transform 280ms var(--ease-standard);
+}
+
+/* Stagger: micro cascade 30-50ms, total < 500ms */
+html.motion-entered .app-header{ transition-delay: 0ms; }
+html.motion-entered .kpi-glucose{ transition-delay: 40ms; }
+html.motion-entered .kpi-insulin{ transition-delay: 70ms; }
+html.motion-entered .kpi-status{ transition-delay: 100ms; }
+html.motion-entered .anatomy-card{ transition-delay: 120ms; }
+html.motion-entered .chart-card{ transition-delay: 130ms; }
+html.motion-entered .scenario-card{ transition-delay: 160ms; }
+html.motion-entered .parameter-card{ transition-delay: 170ms; }
+html.motion-entered .math-card{ transition-delay: 190ms; }
+
+/* ---- G. DASHBOARD CARD PRIMITIVE ---- */
+.dashboard-card{
+  min-width: 0;
+  overflow: hidden;
+  padding: var(--space-5);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--panel);
+  box-shadow: var(--shadow-card);
+  transition:
+    background-color 240ms var(--ease-color),
+    border-color 240ms var(--ease-color);
+}
+
+/* Kartu informatif tidak terangkat saat hover — posisi selalu stabil */
+
+.card-header{
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+
+/* ---- H. KPI CARD PRIMITIVE ---- */
+.kpi-card{
+  min-width: 0;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--panel);
+  box-shadow: var(--shadow-card);
+}
+
+.kpi-card .kpi-label{
+  color: var(--ink-soft);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.kpi-card .value{
+  font-family: var(--font-mono);
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.15;
+  font-variant-numeric: tabular-nums;
+}
+
+.kpi-card .unit{
+  color: var(--ink-soft);
+  font-size: 11px;
+}
+
+.kpi-glucose{
+  border-top: 4px solid var(--accent);
+}
+
+.kpi-insulin{
+  border-top: 4px solid #8B5CF6;
+}
+
+.kpi-glucagon{
+  border-top: 4px solid #B76450;
+}
+
+.status-card{
+  position: relative;
+  transition:
+    background-color 240ms var(--ease-color),
+    border-color 240ms var(--ease-color);
+}
+
+/* Icon settle: sekali per pergantian zona — elemen SVG baru otomatis
+   menjalankan animasi ini saat di-inject via innerHTML */
+@keyframes status-settle{
+  from{
+    opacity: 0.7;
+    transform: scale(0.96);
+  }
+  to{
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.status-icon svg{
+  animation: status-settle var(--motion-standard) var(--ease-standard);
+}
+
+.status-card.status-normal{
+  background: var(--green-bg);
+  border-color: var(--green-line);
+}
+
+.status-card.status-normal .value{
+  color: var(--green);
+}
+
+.status-card.status-normal .status-icon{
+  color: var(--green);
+}
+
+.status-card.status-hipo{
+  background: var(--red-bg);
+  border-color: var(--red-line);
+}
+
+.status-card.status-hipo .value{
+  color: var(--red);
+}
+
+.status-card.status-hipo .status-icon{
+  color: var(--red);
+}
+
+.status-card.status-hiper{
+  background: var(--amber-bg);
+  border-color: var(--amber-line);
+}
+
+.status-card.status-hiper .value{
+  color: var(--amber);
+}
+
+.status-card.status-hiper .status-icon{
+  color: var(--amber);
+}
+
+.status-row{
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+}
+
+.status-icon{
+  display: inline-flex;
+  flex-shrink: 0;
+  color: inherit;
+}
+
+/* ---- I. COMPONENT PRIMITIVES (tombol, slider, chart, math) ---- */
+
+/* buttons */
+button.ctrl,
+.param-reset,
+.math-panel-toggle{
+  min-height: 44px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  background: var(--panel);
+  color: var(--ink);
+  cursor: pointer;
+  font-weight: 700;
+  transition:
+    color var(--motion-quick) var(--ease-color),
+    background-color var(--motion-quick) var(--ease-color),
+    border-color var(--motion-quick) var(--ease-color),
+    transform var(--motion-standard) var(--ease-standard);
+}
+
+button.ctrl{
+  padding: var(--space-2) var(--space-4);
+  font-size: 13px;
+}
+
+/* Hover hanya untuk perangkat yang benar-benar mendukung hover */
+@media (hover: hover) and (pointer: fine){
+  button.ctrl:hover{
+    border-color: var(--accent);
+    color: var(--accent-hover);
+  }
+  .param-reset:hover{
+    color: var(--accent-hover);
+  }
+}
+
+button.ctrl:active{
+  transform: translateY(1px);
+  transition-duration: var(--motion-quick);   /* tekan: cepat turun */
+}
+
+button.ctrl{
+  /* release/settle kembali 160ms via base transition */
+}
+
+button.ctrl.reset{
+  color: var(--ink-soft);
+}
+
+button.ctrl.pause-btn.is-paused{
+  border-color: var(--amber);
+  background: var(--amber-bg);
+  color: var(--amber);
+}
+
+.param-reset{
+  min-height: 36px;
+  padding: var(--space-1) var(--space-2);
+  background: none;
+  border: none;
+  color: var(--accent-hover);
+  font-size: 12px;
+  font-weight: 700;
+  transition: color var(--motion-quick) var(--ease-color);
+}
+
+/* sliders */
+.param-row{
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--panel-muted);
+}
+
+.param-row:last-child{
+  border-bottom: 0;
+}
+
+.param-row-top{
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-1);
+}
+
+.param-name{
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.param-name .sym{
+  font-family: var(--font-mono);
+  color: var(--accent);
+}
+
+.param-vals{
+  color: var(--ink-soft);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.param-vals .cur{
+  font-family: var(--font-mono);
+  font-weight: 700;
+  color: var(--ink);
+}
+
+input[type="range"].param-slider{
+  width: 100%;
+  min-height: 32px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.param-desc{
+  color: var(--ink-soft);
+  font-size: 12px;
+  line-height: 1.4;
+  margin-top: var(--space-1);
+}
+
+/* Parameter lanjutan — collapsible (p2, Gb) */
+.param-more{
+  margin-top: var(--space-2);
+  border-top: 1px solid var(--panel-muted);
+  padding-top: var(--space-2);
+}
+
+.param-more summary{
+  cursor: pointer;
+  color: var(--accent-hover);
+  font-size: 12px;
+  font-weight: 700;
+  list-style: none;                 /* hapus marker default, pakai chevron custom */
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-height: 36px;
+}
+
+.param-more summary::-webkit-details-marker{
+  display: none;
+}
+
+.param-more summary::before{
+  content: '';
+  width: 0;
+  height: 0;
+  border-left: 5px solid currentColor;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  transition: transform var(--motion-standard) var(--ease-standard);
+}
+
+.param-more[open] summary::before{
+  transform: rotate(90deg);
+}
+
+.param-more-body{
+  padding-top: var(--space-1);
+  overflow: hidden;
+  transition:
+    height var(--motion-standard) var(--ease-standard),
+    opacity var(--motion-standard) var(--ease-standard);
+}
+
+.param-more-body[data-animating="closing"]{
+  opacity: 0;
+  transition-duration: var(--motion-quick);
+  transition-timing-function: var(--ease-exit);
+}
+
+.param-more .param-row:first-child{
+  border-top: 1px solid var(--panel-muted);
+  padding-top: var(--space-3);
+}
+
+/* chart */
+.chart-wrap{
+  position: relative;
+  height: 420px;
+}
+
+.chart-legend-hint{
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+
+/* math panel */
+.math-panel-toggle{
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-4);
+  margin-top: 0;
+  border-radius: var(--radius-control);
+  text-align: left;
+  font-size: 14px;
+}
+
+.math-panel-body{
+  display: none;
+  padding: var(--space-5);
+  border-top: 1px solid var(--line);
+  overflow: hidden;
+  transition:
+    height var(--motion-standard) var(--ease-standard),
+    opacity var(--motion-standard) var(--ease-standard);
+}
+
+.math-panel-body.open{
+  display: block;
+}
+
+/* Height animation states — dikontrol JS via animateDisclosure */
+.math-panel-body[data-animating="opening"]{
+  opacity: 0;
+}
+
+.math-panel-body[data-animating="closing"]{
+  opacity: 0;
+  transition-duration: var(--motion-quick);
+  transition-timing-function: var(--ease-exit);
+}
+
+.math-eq{
+  overflow-x: auto;
+  padding: var(--space-4);
+  border-radius: var(--radius-small);
+  background: #F5F7F9;
+  color: #334155;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+}
+
+.math-grid{
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-5);
+  margin-top: var(--space-5);
+}
+
+@media (max-width:700px){
+  .math-grid{
+    grid-template-columns: 1fr;
+  }
+}
+
+.math-chart-wrap{
+  height: 220px;
+}
+
+.math-chart-label{
+  color: var(--ink-soft);
+  font-size: 12px;
+  font-weight: 700;
+  margin-bottom: var(--space-2);
+}
+
+.toggle-arrow{
+  transition: transform var(--transition-fast);
+}
+
+.toggle-arrow.open{
+  transform: rotate(180deg);
+}
+
+/* meal menu */
+.meal-control{
+  position: relative;
+}
+
+.meal-options{
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  padding: var(--space-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-small);
+  background: var(--panel-muted);
+  transition:
+    opacity var(--motion-standard) var(--ease-standard),
+    transform var(--motion-standard) var(--ease-standard);
+}
+
+.meal-options[hidden]{
+  display: none;
+}
+
+/* Open/close motion states (dikontrol JS) */
+.meal-options[data-state="opening"]{
+  opacity: 0;
+  transform: translateY(-4px);
+}
+
+.meal-options[data-state="open"]{
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.meal-options[data-state="closing"]{
+  opacity: 0;
+  transform: translateY(-4px);
+  transition-duration: var(--motion-quick);
+  transition-timing-function: var(--ease-exit);
+}
+
+.meal-options button{
+  min-height: 40px;
+  font-size: 12px;
+}
+
+.controls-row{
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.pid-panel{
+  margin-top: var(--space-4);
+  padding-top: var(--space-4);
+  border-top: 1px dashed var(--line);
+}
+
+.pid-placeholder{
+  font-size: 12px;
+  color: var(--ink-soft);
+  font-style: italic;
+}
+
+/* T1D manual controls */
+.t1d-row{
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.t1d-row label{
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--ink-soft);
+  flex: 1;
+  min-width: 140px;
+}
+
+.t1d-row input[type="number"]{
+  width: 90px;
+  min-height: 40px;
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+
+.t1d-row input[type="checkbox"]{
+  width: 20px;
+  height: 20px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.t1d-row .ctrl{
+  min-height: 40px;
+  padding: var(--space-1) var(--space-3);
+  font-size: 12px;
+}
+
+.pid-note{
+  margin: var(--space-2) 0 0;
+  font-size: 11px;
+  color: var(--ink-soft);
+  line-height: 1.4;
+}
+
+/* AP readout */
+.ap-readout{
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: var(--space-2);
+  margin: 0;
+}
+
+.ap-readout > div{
+  padding: var(--space-2);
+  border: 1px solid var(--panel-muted);
+  border-radius: var(--radius-small);
+  background: var(--panel-muted);
+}
+
+.ap-readout dt{
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--ink-soft);
+  text-transform: uppercase;
+  letter-spacing: .05em;
+}
+
+.ap-readout dd{
+  margin: 2px 0 0;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.ap-readout dd.suspended{
+  color: var(--red);
+}
+
+/* section label (dipakai pid-panel heading) */
+.section-label{
+  color: var(--ink-soft);
+  font-size: 12px;
+  font-weight: 700;
+  margin: var(--space-1) 0 var(--space-2) 0;
+}
+
+/* ---- J. MODE TABS / SEGMENTED CONTROL ---- */
+.mode-tabs{
+  display: inline-flex;
+  gap: var(--space-1);
+  padding: var(--space-1);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  background: var(--panel);
+  margin-bottom: var(--space-5);
+}
+
+.mode-tab{
+  min-height: 44px;
+  min-width: 100px;
+  padding: var(--space-2) var(--space-3);
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--ink-soft);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+  transition:
+    background-color var(--motion-quick) var(--ease-color),
+    color var(--motion-quick) var(--ease-color);
+}
+
+/* Hover mode-tab hanya di perangkat hover-capable */
+@media (hover: hover) and (pointer: fine){
+  .mode-tab:not(:disabled):hover{
+    color: var(--ink);
+  }
+}
+
+.mode-tab.active{
+  background: var(--accent-hover);
+  color: #fff;
+}
+
+.mode-tab:disabled{
+  color: #687583;
+  cursor: not-allowed;
+  opacity: 1;
+}
+
+.mode-tab .soon{
+  display: block;
+  color: var(--ink-soft);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+/* ---- K. BENTO GRID LAYOUT (Fase 4) ---- */
+
+/* App header */
+.app-header{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-6);
+  margin-bottom: var(--space-4);
+}
+
+.brand-block{
+  min-width: 0;
+}
+
+.mode-nav{
+  flex-shrink: 0;
+}
+
+.mode-tabs{
+  margin-bottom: 0; /* override — margin kini di app-header */
+}
+
+/* Desktop: 12 kolom */
+.dashboard-grid{
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  grid-template-areas:
+    "glucose glucose glucose glucose insulin insulin insulin insulin status status status status"
+    "anatomy anatomy anatomy anatomy chart chart chart chart chart chart chart chart"
+    "anatomy anatomy anatomy anatomy scenario scenario scenario scenario parameters parameters parameters parameters"
+    "math math math math math math math math math math math math";
+  gap: var(--space-4);
+}
+
+.kpi-glucose   { grid-area: glucose; }
+.kpi-insulin   { grid-area: insulin; }
+.kpi-status    { grid-area: status; }
+.anatomy-card  { grid-area: anatomy; }
+.chart-card    { grid-area: chart; }
+.scenario-card { grid-area: scenario; }
+.parameter-card{ grid-area: parameters; }
+.parameter-card[hidden]{ display: none !important; }
+.math-card     { grid-area: math; }
+
+/* KPI internal layout */
+.kpi-card{
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  text-align: center;
+}
+
+/* Anatomy card — SVG dominan, tinggi 2 row */
+.anatomy-card{
+  display: flex;
+  flex-direction: column;
+}
+
+#svg-container{
+  display: flex;
+  align-items: flex-start; /* SVG rata atas — tidak "tenggelam" ke bawah */
+  justify-content: center;
+  padding: var(--space-2);
+  border-radius: var(--radius-small);
+  background: linear-gradient(180deg, #F8FCFF 0%, #EFF9FE 100%);
+}
+
+#svg-container svg{
+  display: block;
+  width: min(100%, 340px);
+  max-height: 520px;
+  height: auto;
+  overflow: visible;
+}
+
+/* Particle opacity dikontrol penuh oleh JS (p.fade per frame) —
+   CSS transition harus OFF agar tidak restart tiap frame */
+#svg-container svg #particles circle{ transition: none; }
+
+/* Highlight organ: state transition lembut, bukan per-frame */
+#svg-container svg #gut path,
+#svg-container svg #pancreas path{
+  transition:
+    opacity var(--motion-gentle) var(--ease-color),
+    filter var(--motion-gentle) var(--ease-color);
+}
+
+/* Tissue tint: JS update di-throttle, transition 300ms */
+#svg-container svg #tissue-tint{
+  transition: opacity var(--motion-gentle) var(--ease-color);
+}
+
+.particle-blood{ filter:drop-shadow(0 0 2px rgba(224,56,79,.5)); }
+.particle-insulin{ fill:#2D7DD2; filter:drop-shadow(0 0 2.5px rgba(45,125,210,.6)); }
+.particle-glucose{ fill:#FFD34D; stroke:#B8860B; stroke-width:.4; filter:drop-shadow(0 0 1.5px rgba(255,211,77,.55)); }
+
+.viz-caption{
+  margin: var(--space-3) 0 0;
+  color: var(--ink-soft);
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: center;
+}
+
+/* Chart summary + data table fallback */
+.chart-summary{
+  margin: var(--space-3) 0 0;
+  color: var(--ink-soft);
+  font-size: 12px;
+}
+
+.chart-data-details{
+  margin-top: var(--space-3);
+  border-top: 1px solid var(--panel-muted);
+  padding-top: var(--space-3);
+}
+
+.chart-data-details summary{
+  cursor: pointer;
+  color: var(--accent-hover);
+  font-weight: 700;
+}
+
+.chart-data-details table{
+  width: 100%;
+  margin-top: var(--space-3);
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.chart-data-details th,
+.chart-data-details td{
+  padding: var(--space-2);
+  border-bottom: 1px solid var(--panel-muted);
+  text-align: right;
+}
+
+.chart-data-details th{
+  color: var(--ink-soft);
+}
+
+/* Scenario + Parameter card internal */
+.scenario-card,
+.parameter-card{
+  display: flex;
+  flex-direction: column;
+}
+
+.parameter-card .param-row:last-child{
+  border-bottom: 0;
+}
+
+/* Math card */
+.math-card{
+  overflow: hidden;
+}
+
+/* ---- RESPONSIVE: TABLET ≤1100px ---- */
+@media (max-width: 1100px){
+  .dashboard-grid{
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    grid-template-areas:
+      "glucose glucose insulin insulin status status"
+      "chart chart chart chart chart chart"
+      "scenario scenario scenario parameters parameters parameters"
+      "anatomy anatomy anatomy anatomy anatomy anatomy"
+      "math math math math math math";
+  }
+
+  .app-header{
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+
+  .chart-wrap{
+    height: 340px;
+  }
+
+  #svg-container svg{
+    width: min(100%, 340px);
+  }
+}
+
+/* ---- RESPONSIVE: MOBILE ≤700px ---- */
+@media (max-width: 700px){
+  body{
+    padding: var(--space-3);
+  }
+
+  .app-header{
+    align-items: stretch;
+    flex-direction: column;
+    gap: var(--space-4);
+    margin-bottom: var(--space-4);
+  }
+
+  .mode-tabs{
+    display: grid;
+    grid-template-columns: 1fr;
+    width: 100%;
+  }
+
+  .dashboard-grid{
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "glucose"
+      "insulin"
+      "status"
+      "chart"
+      "scenario"
+      "parameters"
+      "anatomy"
+      "math";
+    gap: var(--space-3);
+  }
+
+  .chart-wrap{
+    height: 300px;
+  }
+
+  #svg-container svg{
+    width: min(100%, 290px);
+  }
+
+  .kpi-card .value{
+    font-size: 20px;
+  }
+
+  .math-grid{
+    grid-template-columns: 1fr;
+  }
+
+  .math-chart-wrap{
+    height: 180px;
+  }
+
+  .meal-options{
+    flex-direction: row;
+  }
+
+  .controls-row{
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .controls-row > .meal-control,
+  .controls-row > button{
+    width: 100%;
+  }
+}
+
+/* Anatomi skematis: seluruh aturan dibatasi pada kartu anatomi. */
+.anatomy-subtitle{margin:5px 0 0;color:var(--ink-soft);font-size:12px;}
+.anatomy-card #svg-container{padding:8px 0 0;background:linear-gradient(160deg,#F6FBFE,#EDF7FC);}
+.anatomy-card #svg-container #scene{width:100%;max-height:none;height:auto;overflow:hidden;}
+.anatomy-labels .organ-callout path{fill:none;stroke:#648398;stroke-width:1.2;stroke-linecap:round;stroke-linejoin:round;}
+.anatomy-labels .organ-callout circle{fill:#325F78;stroke:#fff;stroke-width:1;}
+.anatomy-card #vessel path{stroke-opacity:.52;transition:stroke .4s ease;}
+.anatomy-card .particle-blood{r:2.5px;filter:none;}
+.anatomy-card .particle-glucose{r:3.1px;fill:#E3A01D;stroke:#FFF8E5;stroke-width:1;filter:none;}
+.anatomy-card .particle-insulin{r:3.3px;fill:#227BBF;stroke:#EEF8FF;stroke-width:1;filter:none;}
+.anatomy-legend{display:flex;justify-content:center;flex-wrap:wrap;gap:8px 16px;list-style:none;margin:16px 0 0;padding:12px 0 0;border-top:1px solid var(--line-soft);font-size:11px;color:var(--ink);}
+.anatomy-legend li{display:flex;align-items:center;gap:6px;}
+.anatomy-legend span{display:inline-block;flex-shrink:0;}
+.legend-vessel{width:17px;height:3px;background:#D8897C;border-radius:2px;}
+.legend-glucose,.legend-insulin{width:8px;height:8px;border-radius:50%;}
+.legend-glucose{background:#E9AD31;}.legend-insulin{background:#348BCE;}
+.anatomy-card .viz-caption{font-size:11px;line-height:1.6;color:var(--ink-muted);}
+@media (max-width:1100px){.anatomy-card #svg-container #scene{max-width:440px;}}
+@media (prefers-reduced-motion:reduce){.anatomy-card #vessel path{transition:none;}}
+
+.anatomy-labels text{paint-order:stroke fill;stroke:#F2F9FD;stroke-width:3px;stroke-linejoin:round;}
+.anatomy-card #anatomy-artwork{pointer-events:none;}
+.anatomy-card .anatomy-labels{font-size:15px;}

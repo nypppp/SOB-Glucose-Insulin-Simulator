@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Simulator Glukosa-Insulin</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+<link rel="stylesheet" href="style.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+</head>
+<body>
+<div class="app">
+  <header class="app-header">
+    <div class="brand-block">
+      <h1>Simulator Sistem Glukosa-Insulin</h1>
+      <p class="subtitle">Model Bergman-Pacini &middot; Mode Normal (pankreas sehat)</p>
+    </div>
+    <nav class="mode-nav" aria-label="Mode simulasi">
+      <div class="mode-tabs" id="mode-tabs"></div>
+    </nav>
+  </header>
+
+  <main class="dashboard-grid">
+
+    <article class="kpi-card kpi-glucose" aria-label="Kadar glukosa saat ini">
+      <div class="kpi-label">GLUKOSA</div>
+      <div class="value" id="card-glucose">92</div>
+      <div class="unit">mg/dL</div>
+    </article>
+
+    <article class="kpi-card kpi-insulin" aria-label="Kadar insulin saat ini">
+      <div class="kpi-label">INSULIN</div>
+      <div class="value" id="card-insulin">7.3</div>
+      <div class="unit">&mu;U/mL</div>
+    </article>
+
+    <article class="kpi-card kpi-status status-card status-normal" id="card-status" role="status" aria-live="polite" aria-label="Status glikemik">      <div class="status-row">
+        <span class="kpi-label">STATUS</span>
+        <span class="status-icon" id="card-status-icon" aria-hidden="true">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+        </span>
+      </div>
+      <div class="value" id="card-status-text">Normal</div>
+      <div class="unit">&nbsp;</div>
+    </article>
+
+    <section class="dashboard-card chart-card" aria-label="Grafik glukosa dan insulin">
+      <header class="card-header">
+        <div>
+          <h2>Grafik Glukosa-Insulin</h2>
+          <p class="chart-legend-hint"><span style="color:var(--amber)">&#8213;</span> garis putus orange = waktu makan diklik</p>
+        </div>
+        <button class="ctrl pause-btn" id="btn-pause" type="button" aria-pressed="false" aria-label="Jeda simulasi">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="3" width="4" height="18"/><rect x="15" y="3" width="4" height="18"/></svg>
+          Pause
+        </button>
+      </header>
+      <div class="chart-wrap">
+        <canvas id="mainChart" role="img" aria-label="Grafik glukosa dan insulin terhadap waktu"></canvas>
+      </div>
+      <p class="chart-summary" id="main-chart-summary"></p>
+      <details class="chart-data-details">
+        <summary>Tabel data grafik</summary>
+        <table id="main-chart-data">
+          <thead><tr><th>Waktu</th><th>Glukosa</th><th>Insulin</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </details>
+    </section>
+
+    <section class="dashboard-card scenario-card" aria-labelledby="scenario-heading">
+      <header class="card-header">
+        <h2 id="scenario-heading">Skenario</h2>
+      </header>
+      <div class="controls-row">
+        <div class="meal-control">
+          <button class="ctrl" id="btn-meal-toggle" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="meal-options">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
+            Makan
+          </button>
+          <div class="meal-options" id="meal-options" hidden role="menu">
+            <button class="ctrl" data-size="kecil" role="menuitem">Kecil</button>
+            <button class="ctrl" data-size="sedang" role="menuitem">Sedang</button>
+            <button class="ctrl" data-size="besar" role="menuitem">Besar</button>
+          </div>
+        </div>
+        <button class="ctrl reset" id="btn-reset" type="button">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+          Reset
+        </button>
+      </div>
+      <div class="pid-panel" id="pid-panel" hidden>
+        <!-- T1D manual: kontrol basal + bolus -->
+        <div id="t1d-controls" hidden>
+          <h2 class="section-label">Terapi Insulin Manual (T1D)</h2>
+          <div class="t1d-row">
+            <label for="bolus-units">Bolus insulin (unit)</label>
+            <input type="number" id="bolus-units" min="0.5" max="10" step="0.5" value="2" inputmode="decimal">
+            <button class="ctrl" id="btn-bolus" type="button">Beri Bolus</button>
+          </div>
+          <div class="t1d-row">
+            <label for="basal-toggle">Infus basal aktif</label>
+            <input type="checkbox" id="basal-toggle" checked role="switch">
+          </div>
+          <p class="pid-note">Bolus preset 2 U untuk makan 50 g. Nilai simulasi edukasi — bukan rekomendasi klinis.</p>
+        </div>
+        <!-- AP: read-only status -->
+        <div id="ap-controls" hidden>
+          <h2 class="section-label">Artificial Pancreas (PID-IFB)</h2>
+          <dl class="ap-readout">
+            <div><dt>Target</dt><dd id="ap-target">120 mg/dL</dd></div>
+            <div><dt>Basal</dt><dd id="ap-basal">&mdash;</dd></div>
+            <div><dt>Laju pompa</dt><dd id="ap-rate">&mdash;</dd></div>
+            <div><dt>Status</dt><dd id="ap-status">Aktif</dd></div>
+          </dl>
+          <p class="pid-note">Fully closed-loop: controller tidak menerima informasi makan. Nilai edukasi.</p>
+        </div>
+        <!-- T2D: plant G-X-I Mode Normal dengan parameter T2D -->
+        <div id="t2d-controls" hidden>
+          <h2 class="section-label">Diabetes Tipe 2 (G-X-I)</h2>
+          <div class="param-row">
+            <div class="param-row-top">
+              <label class="param-name" for="t2d-a1-slider"><span class="sym">p&#8323;</span> Tingkat resistensi (&#215;)</label>
+              <div class="param-vals"><output class="cur" id="t2d-a1-val" for="t2d-a1-slider">1.00</output> <span>(default 1.00)</span></div>
+            </div>
+            <input type="range" class="param-slider" id="t2d-a1-slider"
+              min="0.5" max="2" step="0.05" value="1" aria-describedby="t2d-a1-desc">
+            <p class="param-desc" id="t2d-a1-desc">Nilai lebih tinggi menurunkan sensitivitas insulin p&#8323; dan memperberat resistensi.</p>
+          </div>
+          <p class="pid-note">Persamaan sama dengan Mode Normal, tetapi memakai baseline 117 mg/dL, sensitivitas insulin rendah, dan respons sel-beta yang melemah. Target controller tahap berikutnya: 100 mg/dL. Nilai edukasi, bukan diagnosis.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="dashboard-card parameter-card" aria-labelledby="param-heading">
+      <header class="card-header">
+        <h2 id="param-heading">Parameter Fisiologis</h2>
+        <button class="param-reset" id="btn-param-reset" type="button"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;margin-right:2px"><path d="M1 4v6h6"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg> Default</button>
+      </header>
+      <div id="param-sliders"></div>
+    </section>
+
+    <section class="dashboard-card anatomy-card" aria-labelledby="anatomy-heading">
+      <header class="card-header">
+        <div><h2 id="anatomy-heading">Anatomi</h2><p class="anatomy-subtitle">Aliran glukosa dan insulin</p></div>
+      </header>
+      <div id="svg-container">
+        <svg id="scene" viewBox="0 0 400 620" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="scene-title scene-desc">
+<title id="scene-title">Anatomi interaktif glukosa dan insulin</title>
+<desc id="scene-desc">Ilustrasi 2.5D skematis. Glukosa mengalir dari usus dan insulin dari pankreas. Sorotan organ dan otot mengikuti aktivitas simulasi.</desc>
+<image id="anatomy-artwork" href="assets/anatomy-2.5d.png" x="0" y="0" width="400" height="600" preserveAspectRatio="xMidYMid meet"/>
+<g id="tissue-tint" opacity="0" fill="#268BCC">
+  <path d="M154 298 Q172 289 183 306 L179 373 Q175 395 165 385 Q148 353 154 298Z"/>
+  <path d="M216 306 Q230 288 245 300 Q252 353 235 385 Q224 394 221 373Z"/>
+</g>
+<g id="gut" fill="#F4A668"><path opacity="0" d="M164 236 Q194 225 230 234 Q242 260 232 296 Q218 308 200 305 Q174 310 162 293 Q155 263 164 236Z"/></g>
+<g id="pancreas" fill="#FFC64A"><path opacity="0" d="M183 210 Q199 198 216 207 L236 207 Q237 218 219 223 L198 224 Q180 226 183 210Z"/></g>
+<g id="vessel" fill="none" stroke="#D8897C" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></g>
+<g id="heart" transform="translate(215 153)" fill="none" stroke="#C55D57" stroke-width="1.2" opacity=".32">
+  <ellipse rx="13" ry="16">
+    <animate attributeName="opacity" values=".15;.5;.15;.15" keyTimes="0;.18;.38;1" dur="1.1s" repeatCount="indefinite"/>
+  </ellipse>
+</g>
+<g id="particles" aria-hidden="true"></g>
+<g id="organ-labels" class="anatomy-labels" fill="#24485E" font-family="Plus Jakarta Sans, sans-serif" font-size="14" font-weight="600">
+  <g class="organ-callout"><path d="M220 151 L270 141 H292"/><circle cx="220" cy="151" r="2.5"/><text x="298" y="146">Jantung</text></g>
+  <g class="organ-callout"><path d="M172 190 L127 179 H76"/><circle cx="172" cy="190" r="2.5"/><text x="69" y="184" text-anchor="end">Hati</text></g>
+  <g class="organ-callout"><path d="M222 216 L268 205 H292"/><circle cx="222" cy="216" r="2.5"/><text x="298" y="210">Pankreas</text></g>
+  <g class="organ-callout"><path d="M224 269 L275 260 H292"/><circle cx="224" cy="269" r="2.5"/><text x="298" y="265">Usus</text></g>
+  <g class="organ-callout"><path d="M167 347 L128 366 H99"/><circle cx="167" cy="347" r="2.5"/><text x="92" y="362" text-anchor="end"><tspan x="92">Jaringan</tspan><tspan x="92" dy="17">otot</tspan></text></g>
+</g>
+<text x="200" y="609" text-anchor="middle" fill="#73899A" font-family="Plus Jakarta Sans, sans-serif" font-size="10">Ilustrasi skematis · 2.5D</text>
+</svg>
+      </div>
+      <ul class="anatomy-legend" aria-label="Legenda anatomi">
+        <li><span class="legend-vessel" aria-hidden="true"></span>Pembuluh</li>
+        <li><span class="legend-glucose" aria-hidden="true"></span>Glukosa</li>
+        <li><span class="legend-insulin" aria-hidden="true"></span>Insulin</li>
+      </ul><p class="viz-caption">Warna pembuluh mengikuti kadar glukosa. Biru pada otot menunjukkan efek insulin.</p>
+    </section>
+
+    <section class="dashboard-card math-card" aria-labelledby="math-heading">
+      <h2 id="math-heading" class="visually-hidden">Perhitungan Matematis</h2>
+      <button class="math-panel-toggle" id="math-toggle" type="button" aria-expanded="false" aria-controls="math-body">
+        <span>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:middle"><line x1="4" y1="20" x2="20" y2="20"/><line x1="6" y1="17" x2="6" y2="11"/><line x1="10" y1="17" x2="10" y2="3"/><line x1="14" y1="17" x2="14" y2="7"/><line x1="18" y1="17" x2="18" y2="15"/></svg>
+          Lihat Perhitungan Matematis
+        </span>
+        <span class="toggle-arrow" id="math-arrow" aria-hidden="true">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+        </span>
+      </button>
+      <div class="math-panel-body" id="math-body" role="region" aria-hidden="true">
+        <div class="math-eq" id="math-eq-text">Menunggu simulasi berjalan...</div>
+        <div class="math-grid">
+          <div>
+            <h3 class="math-chart-label">X(t) &mdash; Efek Insulin Aktif di Jaringan</h3>
+            <div class="math-chart-wrap"><canvas id="xChart" role="img" aria-label="Grafik efek insulin aktif X(t)"></canvas></div>
+          </div>
+          <div>
+            <h3 class="math-chart-label">Breakdown Kontribusi Suku dG/dt</h3>
+            <div class="math-chart-wrap"><canvas id="breakdownChart" role="img" aria-label="Grafik breakdown kontribusi suku dG/dt"></canvas></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<script src="script.js"></script>
+</body>
+</html>
