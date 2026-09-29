@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Simulator Glukosa-Insulin</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="style.css?v=20260929">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
@@ -50,7 +50,7 @@
       <header class="card-header">
         <div>
           <h2>Grafik Glukosa-Insulin</h2>
-          <p class="chart-legend-hint"><span style="color:var(--amber)">&#8213;</span> garis putus orange = waktu makan diklik</p>
+          <p class="chart-legend-hint"><span style="color:var(--amber)">&#8213;</span> garis putus orange = waktu makan · garis target muncul pada mode kontrol</p>
         </div>
         <button class="ctrl pause-btn" id="btn-pause" type="button" aria-pressed="false" aria-label="Jeda simulasi">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="3" width="4" height="18"/><rect x="15" y="3" width="4" height="18"/></svg>
@@ -97,14 +97,15 @@
           <h2 class="section-label">Terapi Insulin Manual (T1D)</h2>
           <div class="t1d-row">
             <label for="bolus-units">Bolus insulin (unit)</label>
-            <input type="number" id="bolus-units" min="0.5" max="10" step="0.5" value="2" inputmode="decimal">
+            <input type="number" id="bolus-units" min="0.5" max="10" step="0.5" value="2" inputmode="decimal" aria-describedby="bolus-note bolus-feedback">
             <button class="ctrl" id="btn-bolus" type="button">Beri Bolus</button>
           </div>
           <div class="t1d-row">
             <label for="basal-toggle">Infus basal aktif</label>
             <input type="checkbox" id="basal-toggle" checked role="switch">
           </div>
-          <p class="pid-note">Bolus preset 2 U untuk makan 50 g. Nilai simulasi edukasi — bukan rekomendasi klinis.</p>
+          <p class="pid-note" id="bolus-note">Preset awal 2 U. Simulasi makanan T1D memakai preset 25, 50, atau 75 g karbohidrat. Nilai edukasi — bukan rekomendasi klinis.</p>
+          <p class="pid-feedback" id="bolus-feedback" role="status" aria-live="polite"></p>
         </div>
         <!-- AP: read-only status -->
         <div id="ap-controls" hidden>
@@ -129,17 +130,41 @@
               min="0.5" max="2" step="0.05" value="1" aria-describedby="t2d-a1-desc">
             <p class="param-desc" id="t2d-a1-desc">Nilai lebih tinggi menurunkan sensitivitas insulin p&#8323; dan memperberat resistensi.</p>
           </div>
-          <p class="pid-note">Persamaan sama dengan Mode Normal, tetapi memakai baseline 117 mg/dL, sensitivitas insulin rendah, dan respons sel-beta yang melemah. Target controller tahap berikutnya: 100 mg/dL. Nilai edukasi, bukan diagnosis.</p>
+          <p class="pid-note">Persamaan sama dengan Mode Normal, tetapi memakai baseline 117 mg/dL, sensitivitas insulin rendah, dan respons sel-beta yang melemah. Makanan memakai amplitudo input model, bukan gram karbohidrat. Bandingkan dengan tab T2D + PI bertarget 100 mg/dL. Nilai edukasi, bukan diagnosis.</p>
+        </div>
+        <!-- T2D + PI: read-only controller readout + slider resistensi -->
+        <div id="t2d-pi-controls" hidden>
+          <h2 class="section-label">Kontrol PI (T2D)</h2>
+          <dl class="ap-readout">
+            <div><dt>Target</dt><dd id="pi-target">100 mg/dL</dd></div>
+            <div><dt>Bias</dt><dd id="pi-bias">&mdash;</dd></div>
+            <div><dt>Laju insulin</dt><dd id="pi-rate">&mdash;</dd></div>
+            <div><dt>Status</dt><dd id="pi-status">Aktif</dd></div>
+          </dl>
+          <div class="param-row">
+            <div class="param-row-top">
+              <label class="param-name" for="pi-a1-slider"><span class="sym">p&#8323;</span> Tingkat resistensi (&#215;)</label>
+              <div class="param-vals"><output class="cur" id="pi-a1-val" for="pi-a1-slider">1.00</output> <span>(default 1.00)</span></div>
+            </div>
+            <input type="range" class="param-slider" id="pi-a1-slider"
+              min="0.5" max="2" step="0.05" value="1" aria-describedby="pi-a1-desc">
+            <p class="param-desc" id="pi-a1-desc">Bias model menyesuaikan tingkat resistensi. Skenario makan sedang diuji pada batas 0.5&#215; dan 2&#215;.</p>
+          </div>
+          <p class="pid-note" id="pi-note">Glukosa mulai dari 117 mg/dL tanpa kontrol; PI lalu mengarahkannya ke target 100 mg/dL. Makanan memakai amplitudo input model, bukan gram karbohidrat. Keluaran controller adalah <strong>sinyal kontrol model</strong>, bukan rekomendasi dosis insulin. Nilai bias tinggi merupakan konsekuensi model minimal (Bagian 14.6).</p>
         </div>
       </div>
     </section>
 
     <section class="dashboard-card parameter-card" aria-labelledby="param-heading">
       <header class="card-header">
-        <h2 id="param-heading">Parameter Fisiologis</h2>
+        <div><h2 id="param-heading">Parameter Model</h2><p class="parameter-subtitle" id="param-subtitle">Ubah nilai, lalu terapkan untuk menghitung ulang kondisi awal.</p></div>
         <button class="param-reset" id="btn-param-reset" type="button"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;margin-right:2px"><path d="M1 4v6h6"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg> Default</button>
       </header>
       <div id="param-sliders"></div>
+      <div class="parameter-actions">
+        <p class="parameter-feedback" id="parameter-feedback" role="status" aria-live="polite"></p>
+        <button class="ctrl param-apply" id="btn-param-apply" type="button" disabled>Terapkan &amp; Reset</button>
+      </div>
     </section>
 
     <section class="dashboard-card anatomy-card" aria-labelledby="anatomy-heading">
@@ -149,7 +174,7 @@
       <div id="svg-container">
         <svg id="scene" viewBox="0 0 400 620" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="scene-title scene-desc">
 <title id="scene-title">Anatomi interaktif glukosa dan insulin</title>
-<desc id="scene-desc">Ilustrasi 2.5D skematis. Glukosa mengalir dari usus dan insulin dari pankreas. Sorotan organ dan otot mengikuti aktivitas simulasi.</desc>
+<desc id="scene-desc">Ilustrasi 2.5D skematis. Glukosa mengalir dari usus. Insulin berasal dari pankreas pada mode Normal dan T2D, dari depot subkutan pada mode T1D dan AP, serta dapat berasal dari keduanya pada T2D plus PI. Sorotan organ dan otot mengikuti aktivitas simulasi.</desc>
 <image id="anatomy-artwork" href="assets/anatomy-2.5d.png" x="0" y="0" width="400" height="600" preserveAspectRatio="xMidYMid meet"/>
 <g id="tissue-tint" opacity="0" fill="#268BCC">
   <path d="M154 298 Q172 289 183 306 L179 373 Q175 395 165 385 Q148 353 154 298Z"/>

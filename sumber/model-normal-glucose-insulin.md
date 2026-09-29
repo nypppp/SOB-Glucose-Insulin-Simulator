@@ -1480,6 +1480,165 @@ diaktifkan.
 
 ---
 
+## 14. Rancangan PI untuk Plant T2D G-X-I
+
+### 14.1 Tujuan dan arsitektur
+
+Controller PI v1 digunakan untuk eksperimen sistem kontrol: mempertahankan plant
+T2D pada kandidat target `100 mg/dL` tanpa mengganti parameter T2D Bagian 13.2.
+
+```text
+target 100 mg/dL -> error -> PI -> saturasi/suspend -> insulin subkutan
+       ^                                                   |
+       |                                                   v
+       +---- sensor glukosa <- plant T2D G-X-I <- S1/S2 ---+
+```
+
+Ini merupakan algoritma proyek untuk simulator pendidikan. Ia bukan algoritma
+pompa insulin tervalidasi dan keluarannya tidak boleh dipakai sebagai rekomendasi
+dosis.
+
+### 14.2 Aktuator insulin eksternal
+
+Plant T2D diperluas dengan dua depot insulin subkutan dan satu sensor lag:
+
+```text
+dS1/dt = u - S1/tmaxI
+dS2/dt = S1/tmaxI - S2/tmaxI
+
+dI/dt = p6*[G-p5]+*tau - n*(I-Ib)
+        + S2/(tmaxI*VI)
+
+dGs/dt = (G-Gs)/tauSensor
+```
+
+`u` dikonversi dari keluaran controller U/jam menjadi mU/kg/menit:
+
+```text
+u = rateUph*1000/(60*weightKg)
+```
+
+Struktur dua depot dan nilai kandidat `VI=0.12 L/kg`, `tmaxI=55 min` mengikuti
+kompartemen absorpsi insulin Hovorka yang sudah digunakan pada plant T1D proyek.
+Penggabungannya dengan persamaan sekresi endogen `G-X-I` adalah adaptasi proyek.
+
+### 14.3 Persamaan PI
+
+Konvensi error dibuat positif ketika glukosa berada di atas target:
+
+```text
+e(k) = Gs(k) - Gtarget
+
+rateRaw(k) = ubias + Kp*e(k) + Ki*J(k)
+Ki         = Kp/Ti
+
+rate(k) = clamp(rateRaw, 0, umax)
+```
+
+Integral diskrit:
+
+```text
+J(k+1) = J(k) + e(k)*Ts
+```
+
+Integral dibekukan jika keluaran tersaturasi dan error mendorong lebih jauh ke
+arah saturasi. Laju insulin menjadi nol jika glukosa sensor berada pada atau di
+bawah ambang suspend.
+
+Parameter kandidat hasil tuning numerik proyek:
+
+```text
+Gtarget   = 100 mg/dL
+Ts        = 1 min
+tauSensor = 10 min
+Kp        = 0.035 U/hour per mg/dL
+Ti        = 300 min
+Ki        = 0.000116667 U/hour per (mg/dL*min)
+umax      = 10 U/hour
+Gsuspend  = 75 mg/dL
+```
+
+Nilai gain tersebut bukan hasil paper atau parameter terapi pasien. Paper PI/PID
+pada Bagian 11 mendukung konsep feedback insulin, tetapi parameter T2D v1 dituning
+khusus untuk satu plant virtual proyek.
+
+### 14.4 Bias dan equilibrium target
+
+Pada target tanpa makanan, sekresi endogen bernilai nol karena `Gtarget < p5`.
+Equilibrium dihitung dari persamaan plant, bukan ditebak:
+
+```text
+Xtarget = p1*(Gb-Gtarget)/Gtarget
+Itarget = Ib + p2*Xtarget/p3
+ubias   = n*(Itarget-Ib)*VI
+```
+
+Untuk profil T2D v1 dan berat 70 kg:
+
+```text
+Xtarget = 0.00408 1/min
+Itarget = 44.1636 microU/mL
+ubias   = 1.15789 mU/kg/min
+        = 4.86314 U/hour
+```
+
+Nilai bias tersebut tinggi karena plant mempunyai suku `-p1*(G-Gb)` yang selalu
+mendorong glukosa kembali ke baseline `117 mg/dL`. Ini adalah konsekuensi model
+minimal ketika dipaksa menetap pada `100 mg/dL`, bukan rekomendasi basal nyata.
+
+### 14.5 Verifikasi numerik PI v1
+
+Verifier:
+
+```text
+node verification/t2d-pi-v1.js
+```
+
+Hasil utama `dt=0.1 min`:
+
+| Skenario | Puncak G | Nadir G | G akhir | Laju maksimum | Waktu <70 |
+|---|---:|---:|---:|---:|---:|
+| Tanpa kontrol, tanpa makan | 117.00 | 117.00 | 117.00 | 0 | 0 min |
+| PI, tanpa makan | 117.00 | 98.95 | 99.30 | 5.58 U/jam | 0 min |
+| PI + makan kecil | 118.82 | 97.98 | 99.02 | 5.97 U/jam | 0 min |
+| PI + makan sedang | 135.98 | 97.08 | 98.64 | 6.65 U/jam | 0 min |
+| PI + makan besar | 152.87 | 96.26 | 98.29 | 7.32 U/jam | 0 min |
+
+Pemeriksaan berikut lulus:
+
+1. equilibrium terkontrol di `100 mg/dL` tidak drift;
+2. dari baseline T2D `117 mg/dL`, PI mendekati target tanpa turun di bawah 70;
+3. dosis-respons makanan kecil/sedang/besar monoton;
+4. seluruh state tetap nonnegatif;
+5. saturasi atas `10 U/jam` bekerja;
+6. conditional integration menghentikan windup pada saturasi;
+7. suspend pada `75 mg/dL` menghasilkan keluaran nol;
+8. hasil konsisten pada `dt=0.5`, `0.25`, dan `0.1 min`.
+
+### 14.6 Status implementasi
+
+- Plant dan verifier PI v1 tersedia dan seluruh gerbang numerik di atas lulus.
+- Tab `T2D + PI` sudah menggunakan plant G-X-I, aktuator dua depot, sensor lag,
+  controller PI, serta input makanan yang sama dengan Mode Normal/T2D.
+- Regression test aplikasi membandingkan respons nominal PI terhadap verifier:
+  puncak makanan sedang `135.98 mg/dL` dan glukosa akhir `98.64 mg/dL`.
+- Slider resistansi `0.5-2.0` mengubah `p3` efektif; bias equilibrium controller
+  dihitung ulang untuk nilai yang dipilih. Skenario tanpa makan dan makan sedang
+  pada kedua batas diuji sampai 2400 menit, kembali dalam `2 mg/dL` dari target
+  tanpa glukosa di bawah `70 mg/dL`. Perubahan slider dari `1x` ke `2x` pada
+  menit ke-500 juga diuji; glukosa akhir `99.61 mg/dL`, nadir `98.95 mg/dL`.
+  Perubahan `2x` ke `0.5x` menghasilkan nadir `79.92 mg/dL` dan pulih ke
+  `100.70 mg/dL` pada menit ke-2400. Insulin di depot membuat respons awal
+  sesudah perubahan parameter tetap berlangsung walaupun bias dihitung ulang.
+- Bias `4.86 U/jam` dan insulin target `44.16 microU/mL` menunjukkan bahwa angka
+  keluaran tidak layak ditampilkan sebagai saran dosis dunia nyata.
+- UI memberi label **sinyal kontrol model** dan peringatan pendidikan.
+- Model dapat digunakan untuk eksperimen tugas kontrol dan perbandingan tanpa
+  kontrol versus PI, tetapi belum mempunyai validasi klinis atau robustness
+  antar-populasi.
+
+---
+
 *Dokumen ini memuat Mode Normal, T1D basal-bolus, Artificial Pancreas PID-IFB,
 arsip riset T2D G-I-A, dan model T2D utama berbasis Mode Normal. Seluruh mode
 hanya untuk pendidikan dan bukan prediksi, diagnosis, atau rekomendasi klinis.*

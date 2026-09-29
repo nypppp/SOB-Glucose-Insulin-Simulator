@@ -45,7 +45,13 @@ const ModeDiabetesT2D = {
   engine: 't2d',
   extraControls: null,
 };
-const MODES = [ModeNormal, ModeDiabetes, ModeDiabetesAP, ModeDiabetesT2D];
+const ModeDiabetesT2DPI = {
+  id: 'diabetes_t2d_pi', label: 'T2D + PI', sub: 'Kontrol insulin otomatis', enabled: true,
+  computeIin: null,   // T2D+PI: plant G-X-I + aktuator subkutan + controller PI
+  engine: 't2d_pi',
+  extraControls: null,
+};
+const MODES = [ModeNormal, ModeDiabetes, ModeDiabetesAP, ModeDiabetesT2D, ModeDiabetesT2DPI];
 let currentMode = ModeNormal;
 
 /* =========================================================
@@ -329,14 +335,138 @@ const T2D_PARAMS = {
   Gb: 117,
   Ib: 12,
 };
+// Parameter input T2D yang tidak termasuk state diferensial G-X-I.
+const T2D_UI_PARAMS = { resistanceScale: 1, mealTau: 40 };
 const T2D_CONTROL_TARGET = 100; // mg/dL; setpoint kandidat controller T2D berikutnya
 
 const T2D_RESISTANCE_MIN = 0.5, T2D_RESISTANCE_MAX = 2.0;
 
 /* =========================================================
+   T2D + PI ENGINE — G-X-I + aktuator subkutan + sensor lag
+   (port dari verification/t2d-pi-v1.js, spec Bagian 14)
+   ========================================================= */
+const T2D_PI_ACTUATOR = {
+  weightKg: 70,
+  VI: 0.12,       // L/kg; volume distribusi aktuator
+  tmaxI: 55,      // min; absorpsi subkutan 2-kompartemen
+  mealTau: 40,
+};
+
+const T2D_PI_CONFIG = {
+  target: 100,    // mg/dL (kandidat proyek, Bagian 13.5/14.3)
+  period: 1,      // menit
+  sensorTau: 10,  // menit
+  kp: 0.035,      // U/h per mg/dL — tuning numerik proyek
+  ti: 300,        // menit — ki = kp/ti
+  maxUph: 10,     // U/jam — saturasi pompa
+  suspend: 75,    // mg/dL — low-glucose suspend
+};
+function t2dPiKi(){ return T2D_PI_CONFIG.kp / T2D_PI_CONFIG.ti; }
+
+/* Bagian 14.4: equilibrium target dihitung dari persamaan plant, bukan tebakan */
+function t2dPiTargetEquilibrium(target = T2D_PI_CONFIG.target, resistanceScale = 1){
+  const G = target;
+  const X = T2D_PARAMS.p1 * (T2D_PARAMS.Gb - G) / G;
+  const p3eff = T2D_PARAMS.p3 / resistanceScale;
+  const I = T2D_PARAMS.Ib + T2D_PARAMS.p2 * X / p3eff;
+  const appearance = T2D_PARAMS.n * (I - T2D_PARAMS.Ib);   // µU/mL/min
+  const uPlant = appearance * T2D_PI_ACTUATOR.VI;           // mU/kg/min
+  const basalUph = uPlant * 60 * T2D_PI_ACTUATOR.weightKg / 1000;
+  const S = uPlant * T2D_PI_ACTUATOR.tmaxI;
+  return { G, X, I, S1: S, S2: S, Gs: G, uPlant, basalUph };
+}
+
+function t2dPiRateToPlant(rateUph){
+  return rateUph * 1000 / (60 * T2D_PI_ACTUATOR.weightKg);
+}
+
+/* Input makan: format amplitude (Mode Normal style) — plant G-X-I menerima D(t) */
+function t2dPiMealD(t, meals){
+  let total = 0;
+  for(const m of meals){
+    const age = t - m.startTime;
+    if(age >= 0){
+      total += m.A * age * Math.exp(-age / m.tauMeal) /
+        (m.tauMeal ** 2);
+    }
+  }
+  return total;
+}
+
+/* 7-state: [G, X, I, S1, S2, Gs, tau] — tau = tau lokal endogen dalam RK4 */
+function t2dPiDerivative(t, y, meals, rateUph, p3eff){
+  const [G, X, I, S1, S2, Gs, tau] = y;
+  const u = t2dPiRateToPlant(rateUph);
+  const tauRate = G > T2D_PARAMS.p5 ? 1 : 0;
+  const endogenous = T2D_PARAMS.p6 * Math.max(G - T2D_PARAMS.p5, 0) * tau;
+  return [
+    -T2D_PARAMS.p1 * (G - T2D_PARAMS.Gb) - X * G + t2dPiMealD(t, meals),
+    -T2D_PARAMS.p2 * X + p3eff * (I - T2D_PARAMS.Ib),
+    endogenous - T2D_PARAMS.n * (I - T2D_PARAMS.Ib) +
+      S2 / (T2D_PI_ACTUATOR.tmaxI * T2D_PI_ACTUATOR.VI),
+    u - S1 / T2D_PI_ACTUATOR.tmaxI,
+    S1 / T2D_PI_ACTUATOR.tmaxI - S2 / T2D_PI_ACTUATOR.tmaxI,
+    (G - Gs) / T2D_PI_CONFIG.sensorTau,
+    tauRate,
+  ];
+}
+
+function t2dPiRk4Step(t, y, h, meals, rateUph, p3eff){
+  const k1 = t2dPiDerivative(t, y, meals, rateUph, p3eff);
+  const k2 = t2dPiDerivative(t + h/2, t1dAddScaled(y, k1, h/2), meals, rateUph, p3eff);
+  const k3 = t2dPiDerivative(t + h/2, t1dAddScaled(y, k2, h/2), meals, rateUph, p3eff);
+  const k4 = t2dPiDerivative(t + h, t1dAddScaled(y, k3, h), meals, rateUph, p3eff);
+  const next = y.map((v, i) => v + h * (k1[i] + 2*k2[i] + 2*k3[i] + k4[i]) / 6);
+  if(next[0] <= T2D_PARAMS.p5) next[6] = 0;   // reset tau lokal (verifier line 92)
+  return next;
+}
+
+/* Bagian 14.3: PI diskrit + saturasi + anti-windup + suspend */
+function t2dPiNewController(){
+  return { integral: 0, rate: 0 };
+}
+
+function t2dPiControllerStep(controller, glucose, eq){
+  const error = glucose - T2D_PI_CONFIG.target;
+  const unsaturated = eq.basalUph + T2D_PI_CONFIG.kp * error +
+    t2dPiKi() * controller.integral;
+  let rate = Math.max(0, Math.min(T2D_PI_CONFIG.maxUph, unsaturated));
+  if(glucose <= T2D_PI_CONFIG.suspend) rate = 0;
+
+  const saturatedHigh = unsaturated > T2D_PI_CONFIG.maxUph && error > 0;
+  const saturatedLow = unsaturated < 0 && error < 0;
+  if(!saturatedHigh && !saturatedLow && glucose > T2D_PI_CONFIG.suspend){
+    controller.integral += error * T2D_PI_CONFIG.period;   // conditional integration
+  }
+  controller.rate = rate;
+  return { rate, error, unsaturated };
+}
+
+/* =========================================================
    STATE
    ========================================================= */
 function initialState(){
+  if(currentMode.id === 'diabetes_t2d_pi'){
+    // T2D+PI: start dari baseline T2D 117 (verifier startAtTarget:false) —
+    // PI menarik glukosa menuju target 100 secara dinamis (edukatif).
+    const eq = t2dPiTargetEquilibrium();
+    return {
+      t: 0,
+      engine: 't2d_pi',
+      y: [T2D_PARAMS.Gb, 0, T2D_PARAMS.Ib, 0, 0, T2D_PARAMS.Gb, 0],
+      piEq: eq,                            // { basalUph, ... } untuk readout bias
+      piController: t2dPiNewController(),
+      piRate: 0,                           // U/h — live readout
+      piSuspended: false,
+      piInfo: null,                        // { error, unsaturated } readout
+      nextControlT: 0,
+      resistanceScale: T2D_UI_PARAMS.resistanceScale,
+      activeMeals: [],                     // { startTime, A, tauMeal } — Mode Normal style
+      mealEvents: [],
+      G: T2D_PARAMS.Gb, I: T2D_PARAMS.Ib, X: 0,
+      history: [], lastHistoryT: -999,
+    };
+  }
   if(currentMode.id === 'diabetes_t2d'){
     // T2D: struktur G-X-I Normal, equilibrium memakai parameter T2D (Bagian 13).
     return {
@@ -344,7 +474,7 @@ function initialState(){
       engine: 't2d',
       G: T2D_PARAMS.Gb, X: 0, I: T2D_PARAMS.Ib,
       tauLocal: 0,
-      resistanceScale: 1,
+      resistanceScale: T2D_UI_PARAMS.resistanceScale,
       activeMeals: [],                   // format sama dengan Mode Normal
       mealEvents: [],                    // { t, size } — marker chart
       history: [], lastHistoryT: -999,
@@ -446,14 +576,17 @@ function rk4Step(state, dt, mode, params = CONFIG, p3eff = params.p3){
    SCENARIOS
    ========================================================= */
 function triggerMeal(size){
-  if(currentMode.id !== 'normal' && currentMode.id !== 'diabetes_t2d'){
+  if(currentMode.id !== 'normal' && currentMode.id !== 'diabetes_t2d' &&
+     currentMode.id !== 'diabetes_t2d_pi'){
     // T1D/AP: gram karbohidrat (Bagian 10.6) — preset 25/50/75 g
     simState.activeMeals.push({ time: simState.t, grams: MEAL_GRAMS[size] || 50 });
   } else {
+    // Normal/T2D/T2D+PI memakai event makanan G-X-I yang sama.
     simState.activeMeals.push({
       startTime: simState.t,
       A: CONFIG.mealAmplitude[size],
-      tauMeal: CONFIG.mealTau,
+      tauMeal: (currentMode.id === 'diabetes_t2d' || currentMode.id === 'diabetes_t2d_pi')
+        ? T2D_UI_PARAMS.mealTau : CONFIG.mealTau,
     });
   }
   simState.mealEvents.push({ t: simState.t, size });
@@ -462,9 +595,11 @@ function resetSimulation(){
   simState = initialState();
   pendingSimMinutes = 0;
   lastFrameTime = null;
+  if(typeof setMealMenuOpen === 'function') setMealMenuOpen(false, false);
   lastStatusClass = null; // paksa render ulang status card setelah reset
   lastSummaryT = -1;
   lastRenderedKey = '';   // paksa chart render 
+  lastMathRenderT = -Infinity;
   applyChartScale();      // yG max berganti per mode (260 vs 400)ulang setelah reset
   if(mainChart){
     mainChart.data.labels = [];
@@ -488,6 +623,7 @@ function resetSimulation(){
   updateModePanels();
   updateCards();
   updateApReadout();
+  updateT2dPiReadout();
   updateMathPanel();
 }
 
@@ -571,8 +707,10 @@ function updateSvg(dt){
   const color = glucoseToColor(simState.G);
   for(const p of vesselPaths){ p.style.stroke = color; p.style.fill = 'none'; }
 
-  const endocrineParams = currentMode.id === 'diabetes_t2d' ? T2D_PARAMS : CONFIG;
-  const tauLocal = simState.tauLocal || 0;
+  const isT2d = currentMode.id === 'diabetes_t2d' || currentMode.id === 'diabetes_t2d_pi';
+  const endocrineParams = isT2d ? T2D_PARAMS : CONFIG;
+  const tauLocal = currentMode.id === 'diabetes_t2d_pi'
+    ? simState.y[6] : (simState.tauLocal || 0);
   const above = Math.max(simState.G - endocrineParams.p5, 0);
   const secretionRate = endocrineParams.p6 * above * tauLocal;
   const glowStrength = Math.min(secretionRate / 3, 1);
@@ -584,7 +722,7 @@ function updateSvg(dt){
       ? 0                               // pankreas nonaktif di T1D/AP
       : (glowStrength * 0.32).toFixed(3);
   }
-  const isGxi = currentMode.id === 'normal' || currentMode.id === 'diabetes_t2d';
+  const isGxi = currentMode.id === 'normal' || isT2d;
   const D = isGxi
     ? mealD(simState.t, simState.activeMeals)
     : t1dMealAppearance(simState.t, simState.activeMeals);
@@ -595,7 +733,7 @@ function updateSvg(dt){
      Normal: X max ~0.009 (XFull). T1D/AP: x2 disposal ~0.005.
      T2D memakai state X yang sama dengan Normal. */
   if(tissueTintEl){
-    const xFull = (currentMode.id === 'normal' || currentMode.id === 'diabetes_t2d')
+    const xFull = isGxi
       ? VIZ.XFull : 0.005;
     const Xfrac = Math.max(0, Math.min(simState.X / xFull, 1));
     tissueTintEl.style.opacity = (Xfrac * 0.22).toFixed(3);
@@ -756,7 +894,16 @@ const heartNode = TREE.nodes[String(TREE.heartRoot)];
 /* Asal insulin per mode: Normal = pankreas (sekresi endogen);
    T1D/AP = depot subkutan (injeksi/pompa). */
 function insulinVeinForMode(){
-  // T2D: sekresi endogen masih jalan — dari pankreas, seperti Normal.
+  // T2D+PI memiliki insulin endogen dan insulin eksogen dari depot.
+  if(currentMode.id === 'diabetes_t2d_pi'){
+    const y = simState.y;
+    const exogenous = y && y.length >= 5
+      ? y[4] / (T2D_PI_ACTUATOR.tmaxI * T2D_PI_ACTUATOR.VI) : 0;
+    const endogenous = Math.max(0, T2D_PARAMS.p6 *
+      Math.max(simState.G - T2D_PARAMS.p5, 0) * y[6]);
+    const total = exogenous + endogenous;
+    return total > 0 && Math.random() < exogenous / total ? SUBCUT_VEIN : PANCREAS_VEIN;
+  }
   return (currentMode.id === 'normal' || currentMode.id === 'diabetes_t2d')
     ? PANCREAS_VEIN : SUBCUT_VEIN;
 }
@@ -780,8 +927,12 @@ function updateFlowParticles(dt){
   const bloodColor = glucoseToColor(simState.G);
 
   /* --- insulin: lahir di pankreas dengan rate ∝ sekresi sesaat --- */
-  const above = Math.max(simState.G - CONFIG.p5, 0);
-  const secretionRate = CONFIG.p6 * above * simState.tauLocal;
+  const isT2d = currentMode.id === 'diabetes_t2d' || currentMode.id === 'diabetes_t2d_pi';
+  const endocrineParams = isT2d ? T2D_PARAMS : CONFIG;
+  const tauLocal = currentMode.id === 'diabetes_t2d_pi'
+    ? simState.y[6] : (simState.tauLocal || 0);
+  const above = Math.max(simState.G - endocrineParams.p5, 0);
+  const secretionRate = endocrineParams.p6 * above * tauLocal;
   const secretionFrac = Math.min(secretionRate / VIZ.insulinSecretionMax, 1);
   // tingkat target jumlah partikel aktif mengikuti level plasma I absolut
   // (I/45 dari sumbu kanan grafik — insulin basal Ib juga bersirkulasi,
@@ -801,7 +952,9 @@ function updateFlowParticles(dt){
   }
 
   /* --- glukosa: lahir di usus dengan rate ∝ D(t) + basal --- */
-  const D = mealD(simState.t, simState.activeMeals);
+  const D = currentMode.id === 'diabetes' || currentMode.id === 'diabetes_ap'
+    ? t1dMealAppearance(simState.t, simState.activeMeals)
+    : mealD(simState.t, simState.activeMeals);
   const mealFrac = Math.min(D / VIZ.mealSpawnMax, 1);
   const glucoseFrac = Math.max(0, Math.min(simState.G / CONFIG.zones.chartMax, 1));
   const glucoseTarget = Math.round(glucoseFrac * VIZ.glucoseMaxCount);
@@ -944,6 +1097,13 @@ const STATUS_ICONS = {
   'status-normal': '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>',
   'status-hiper': '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>',
 };
+function t2dTargetStatus(G, target = T2D_CONTROL_TARGET){
+  if(G < CONFIG.zones.hipoMax) return { cls: 'status-hipo', text: 'Hipoglikemia', summary: 'hipoglikemia' };
+  if(Math.abs(G - target) <= 5) return { cls: 'status-normal', text: 'Target', summary: 'target' };
+  if(G < target - 5) return { cls: 'status-hiper', text: 'Di bawah Target', summary: 'di bawah target' };
+  if(G <= CONFIG.zones.normalMax) return { cls: 'status-hiper', text: 'Di atas Target', summary: 'di atas target' };
+  return { cls: 'status-hiper', text: 'Hiperglikemia', summary: 'hiperglikemia' };
+}
 function updateCards(){
   document.getElementById('card-glucose').textContent = simState.G.toFixed(0);
   document.getElementById('card-insulin').textContent = simState.I.toFixed(1);
@@ -952,17 +1112,17 @@ function updateCards(){
   const { hipoMax, normalMax } = CONFIG.zones;
   let cls, txt;
   if(simState.G < hipoMax){ cls='status-hipo'; txt='Hipoglikemia'; }
-  else if(currentMode.id === 'diabetes_t2d'){
-    if(Math.abs(simState.G - T2D_CONTROL_TARGET) <= 5){ cls='status-normal'; txt='Target'; }
-    else if(simState.G < T2D_CONTROL_TARGET - 5){ cls='status-hipo'; txt='Di bawah Target'; }
-    else if(simState.G <= normalMax){ cls='status-hiper'; txt='Di atas Target'; }
-    else { cls='status-hiper'; txt='Hiperglikemia'; }
+  else if(currentMode.id === 'diabetes_t2d' || currentMode.id === 'diabetes_t2d_pi'){
+    const target = currentMode.id === 'diabetes_t2d_pi' ? T2D_PI_CONFIG.target : T2D_CONTROL_TARGET;
+    const status = t2dTargetStatus(simState.G, target);
+    cls = status.cls;
+    txt = status.text;
   }
   else if(simState.G <= normalMax){ cls='status-normal'; txt='Normal'; }
   else { cls='status-hiper'; txt='Hiperglikemia'; }
 
   // Update class/text/icon HANYA saat zona berubah — live region tidak spam tiap frame
-  if(cls !== lastStatusClass){
+  if(cls !== lastStatusClass || statusText.textContent !== txt){
     lastStatusClass = cls;
     // Pertahankan kpi-status agar kartu tetap menempati area grid yang benar.
     statusCard.className = 'kpi-card kpi-status status-card ' + cls;
@@ -994,6 +1154,24 @@ function zonesPlugin(hipoMax, normalMax, chartMax){
         ctx.fillStyle = color;
         ctx.fillRect(chartArea.left, yTop, chartArea.right-chartArea.left, yBot-yTop);
       }
+      ctx.restore();
+    },
+    afterDatasetsDraw(chart){
+      const target = currentMode.id === 'diabetes_ap' ? AP_CONFIG.targetMgDl
+        : (currentMode.id === 'diabetes_t2d_pi' ? T2D_PI_CONFIG.target : null);
+      if(target === null || !chart.chartArea) return;
+      const {ctx, chartArea, scales} = chart;
+      const y = scales.yG.getPixelForValue(target);
+      ctx.save();
+      ctx.strokeStyle = currentMode.id === 'diabetes_ap' ? '#0E7A52' : '#8F5A10';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([7, 5]);
+      ctx.beginPath(); ctx.moveTo(chartArea.left, y); ctx.lineTo(chartArea.right, y); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = ctx.strokeStyle;
+      ctx.font = '600 10px sans-serif';
+      ctx.textAlign = 'right';
+      ctx.fillText(`Target ${target} mg/dL`, chartArea.right - 4, y - 5);
       ctx.restore();
     }
   };
@@ -1058,7 +1236,9 @@ let mainChart = null, xChart = null, breakdownChart = null;
 
 function chartMaxForMode(){
   if(currentMode.id === 'normal') return CONFIG.zones.chartMax;
-  if(currentMode.id === 'diabetes_t2d') return 300;   // peak 75g ~238, margin stress
+  if(currentMode.id === 'diabetes_t2d' || currentMode.id === 'diabetes_t2d_pi'){
+    return 300;   // T2D: peak ~238 (tanpa kontrol) / ~153 (PI)
+  }
   return 400;                                          // T1D/AP
 }
 
@@ -1175,10 +1355,8 @@ function updateChartSummary(){
   if(sum){
     const prev = hist.length > 1 ? hist[hist.length - 2] : cur;
     const trend = cur.G > prev.G + 0.5 ? 'naik' : (cur.G < prev.G - 0.5 ? 'turun' : 'stabil');
-    const zone = currentMode.id === 'diabetes_t2d'
-      ? (Math.abs(cur.G - T2D_CONTROL_TARGET) <= 5 ? 'target'
-        : (cur.G < T2D_CONTROL_TARGET - 5 ? 'di bawah target'
-          : (cur.G <= CONFIG.zones.normalMax ? 'di atas target' : 'hiperglikemia')))
+    const zone = (currentMode.id === 'diabetes_t2d' || currentMode.id === 'diabetes_t2d_pi')
+      ? t2dTargetStatus(cur.G, currentMode.id === 'diabetes_t2d_pi' ? T2D_PI_CONFIG.target : T2D_CONTROL_TARGET).summary
       : (cur.G < CONFIG.zones.hipoMax ? 'hipoglikemia'
         : (cur.G <= CONFIG.zones.normalMax ? 'normal' : 'hiperglikemia'));
     sum.textContent = `Menit ${cur.t.toFixed(0)}: glukosa ${cur.G.toFixed(0)} mg/dL (${trend}), insulin ${cur.I.toFixed(1)} µU/mL — status ${zone}.`;
@@ -1202,8 +1380,60 @@ function updateChartSummary(){
    RENDERER: Math panel
    ========================================================= */
 let mathPanelOpen = false;
+let lastMathRenderT = -Infinity;
 function updateMathPanel(){
   if(!mathPanelOpen) return;
+  // Panel matematis tetap mengikuti simulasi tanpa menggambar ulang chart di setiap frame.
+  if(Math.abs(simState.t - lastMathRenderT) < 5 && lastMathRenderT !== -Infinity) return;
+  lastMathRenderT = simState.t;
+  if(currentMode.id === 'diabetes_t2d_pi'){
+    // T2D+PI: plant G-X-I + aktuator subkutan + controller PI (Bagian 14)
+    const y = simState.y;
+    if(!y || y.length < 7) return;
+    const [G, X, I, S1, S2, Gs, tau] = y;
+    const p3eff = T2D_PARAMS.p3 / simState.resistanceScale;
+    const D = t2dPiMealD(simState.t, simState.activeMeals);
+    const tP1 = -T2D_PARAMS.p1 * (G - T2D_PARAMS.Gb);
+    const tX = -X * G;
+    const dG = tP1 + tX + D;
+    const dX = -T2D_PARAMS.p2 * X + p3eff * (I - T2D_PARAMS.Ib);
+    const endogenous = T2D_PARAMS.p6 * Math.max(G - T2D_PARAMS.p5, 0) * tau;
+    const extAppear = S2 / (T2D_PI_ACTUATOR.tmaxI * T2D_PI_ACTUATOR.VI);
+    const dI = endogenous - T2D_PARAMS.n * (I - T2D_PARAMS.Ib) + extAppear;
+    const u = t2dPiRateToPlant(simState.piRate);
+
+    let ctrlText = '';
+    if(simState.piInfo){
+      const c = simState.piInfo;
+      ctrlText = `
+Controller PI (per 1 menit):
+  e  = Gs - target = ${c.error.toFixed(2)} mg/dL
+  raw = bias + Kp\u00b7e + Ki\u00b7J = ${c.unsaturated.toFixed(3)} U/h
+  laju pompa = ${simState.piRate.toFixed(3)} U/h   (u = ${u.toFixed(4)} mU/kg/min)`;
+    }
+
+    document.getElementById('math-eq-text').textContent =
+`T2D G-X-I + PI (Bagian 14) — t = ${simState.t.toFixed(1)} menit
+p\u2083 efektif = ${p3eff.toExponential(3)} (${simState.resistanceScale.toFixed(2)}\u00d7 resistensi)
+
+dG/dt = -p\u2081(G-Gb) - X\u00b7G + D(t)
+      = ${tP1.toFixed(3)} + (${tX.toFixed(3)}) + ${D.toFixed(3)}
+      = ${dG.toFixed(3)} mg/dL/min
+
+dX/dt = -p\u2082X + p\u2083(I-Ib) = ${dX.toExponential(3)} 1/min\u00b2
+dI/dt = p\u2086[G-p\u2085]\u207a\u00b7\u03c4 - n(I-Ib) + S\u2082/(tmaxI\u00b7VI)
+      = ${endogenous.toFixed(3)} - ${(T2D_PARAMS.n*(I-T2D_PARAMS.Ib)).toFixed(3)} + ${extAppear.toFixed(4)}
+      = ${dI.toFixed(3)} \u00b5U/mL/min
+dS\u2081/dt = u - S\u2081/tmaxI,  dS\u2082/dt = S\u2081/tmaxI - S\u2082/tmaxI,  dGs/dt = (G-Gs)/\u03c4sensor${ctrlText}`;
+
+    if(breakdownChart){
+      breakdownChart.data.labels = ['-p\u2081\u00b7\u0394G','-X\u00b7G','+D(t)'];
+      breakdownChart.data.datasets[0].data = [tP1, tX, D];
+      breakdownChart.data.datasets[0].backgroundColor = ['#475569','#A62B24','#0E7A52'];
+      breakdownChart.update('none');
+    }
+    return;
+  }
   if(currentMode.id === 'diabetes_t2d'){
     const { G, X, I } = simState;
     const p3eff = T2D_PARAMS.p3 / simState.resistanceScale;
@@ -1310,68 +1540,193 @@ dI/dt = p6\u00b7[G-p5]\u207a\u00b7\u03c4 - n(I-Ib)
 }
 
 /* =========================================================
-   PARAMETER SLIDERS (fisiologis) — default = nilai tervalidasi
-   Mode Normal (Pacini & Bergman 1986, dataset NORMAL.DAT)
+   PANEL PARAMETER PER MODE
+   Draft dipisahkan dari konstanta aktif. Nilai baru hanya digunakan setelah
+   "Terapkan & Reset", supaya state solver lama tidak bercampur dengan model baru.
    ========================================================= */
-const DEFAULT_PARAMS = { p1:0.03082, p2:0.02093, p3:1.062e-5, p6:0.003349, Gb:92.0 };
-const PARAM_DEFS = [
-  { key:'p1', sym:'p\u2081', name:'Glucose effectiveness', min:0.010, max:0.060, step:0.0005,
-    desc:'Kecepatan glukosa kembali ke baseline tanpa bantuan insulin', decimals:4 },
-  { key:'p2', sym:'p\u2082', name:'Peluruhan efek insulin', min:0.010, max:0.040, step:0.0005,
-    desc:'Seberapa cepat efek insulin di jaringan meluruh', decimals:4 },
-  { key:'p3', sym:'p\u2083', name:'Insulin sensitivity', min:0.3e-5, max:3.0e-5, step:0.02e-5,
-    desc:'Turunkan untuk simulasikan insulin resistance', decimals:6 },
-  { key:'p6', sym:'p\u2086', name:'Respons pankreas', min:0.0010, max:0.0080, step:0.0001,
-    desc:'Turunkan untuk simulasikan pankreas kurang responsif', decimals:4 },
-  { key:'Gb', sym:'G\u1d47', name:'Glukosa basal', min:80, max:110, step:1,
-    desc:'Baseline kadar glukosa puasa (mg/dL)', decimals:0 },
+const param = (scope, key, sym, name, min, max, step, decimals, desc, group='physiology', primary=false) =>
+  ({ scope, key, sym, name, min, max, step, decimals, desc, group, primary });
+
+const PARAMETER_SETS = {
+  normal: [
+    param('normal','p1','p₁','Glucose effectiveness',.01,.06,.0005,4,'Kecepatan glukosa kembali ke baseline.', 'physiology',true),
+    param('normal','p3','p₃','Sensitivitas insulin',.3e-5,3e-5,.02e-5,6,'Efek insulin terhadap pengambilan glukosa.', 'physiology',true),
+    param('normal','p6','p₆','Respons pankreas',.001,.008,.0001,4,'Sekresi insulin saat glukosa di atas ambang.', 'physiology',true),
+    param('normal','p2','p₂','Peluruhan efek insulin',.01,.04,.0005,4,'Kecepatan efek insulin di jaringan meluruh.'),
+    param('normal','n','n','Pembersihan insulin',.1,.6,.01,2,'Kecepatan insulin kembali ke baseline.'),
+    param('normal','p5','p₅','Ambang sekresi pankreas',75,115,1,0,'Glukosa saat pankreas mulai meningkatkan sekresi.'),
+    param('normal','Gb','Gᵇ','Glukosa basal',80,110,1,0,'Baseline glukosa puasa (mg/dL).'),
+    param('normal','Ib','Iᵇ','Insulin basal',3,15,.1,1,'Baseline insulin (µU/mL).'),
+    param('normal','mealTau','τ makan','Waktu penyerapan makanan',20,90,1,0,'Lebih besar berarti penyerapan makanan lebih lambat.'),
+  ],
+  diabetes: [
+    param('t1d','targetG','Target','Target basal T1D',4.5,8,.1,1,'Target equilibrium manual (mmol/L).','physiology',true),
+    param('t1d','weightKg','BB','Berat badan',40,120,1,0,'Berat badan subjek model (kg).','physiology',true),
+    param('t1d','tmaxG','tmaxG','Penyerapan makanan',20,90,1,0,'Waktu penyerapan karbohidrat (menit).','physiology',true),
+    param('t1d','tmaxI','tmaxI','Penyerapan insulin',30,100,1,0,'Waktu penyerapan insulin subkutan (menit).','physiology',true),
+    param('t1d','SIT','SIT','Sensitivitas transport',10e-4,100e-4,1e-4,4,'Efek insulin pada transport glukosa.'),
+    param('t1d','SID','SID','Sensitivitas disposal',2e-4,20e-4,.2e-4,4,'Efek insulin pada penggunaan glukosa.'),
+    param('t1d','SIE','SIE','Sensitivitas EGP',100e-4,1000e-4,10e-4,4,'Efek insulin pada produksi glukosa hati.'),
+    param('t1d','EGP0','EGP₀','Produksi glukosa hati',.006,.03,.0005,4,'Produksi glukosa endogen basal.'),
+    param('t1d','F01','F01','Penggunaan glukosa',.004,.018,.0005,4,'Penggunaan glukosa non-insulin.'),
+    param('t1d','VG','VG','Volume glukosa',.10,.25,.01,2,'Volume distribusi glukosa (L/kg).'),
+    param('t1d','VI','VI','Volume insulin',.06,.20,.01,2,'Volume distribusi insulin (L/kg).'),
+    param('t1d','k12','k12','Transfer antarkompartemen',.02,.12,.002,3,'Perpindahan glukosa antarkompartemen.'),
+    param('t1d','ka1','ka1','Laju aksi insulin 1',.002,.02,.001,3,'Dinamika aksi insulin pertama.'),
+    param('t1d','ka2','ka2','Laju aksi insulin 2',.015,.12,.005,3,'Dinamika aksi insulin kedua.'),
+    param('t1d','ka3','ka3','Laju aksi insulin 3',.008,.08,.002,3,'Dinamika aksi insulin ketiga.'),
+    param('t1d','ke','ke','Pembersihan insulin',.05,.25,.005,3,'Kecepatan insulin dibersihkan dari plasma.'),
+    param('t1d','AG','AG','Ketersediaan makanan',.4,1,.05,2,'Fraksi karbohidrat yang masuk ke model glukosa.'),
+  ],
+  diabetes_ap: [],
+  diabetes_t2d: [
+    param('t2dUi','resistanceScale','×','Tingkat resistensi',.5,2,.05,2,'Nilai lebih tinggi menurunkan sensitivitas insulin efektif.','physiology',true),
+    param('t2d','p3','p₃','Sensitivitas insulin dasar',.5e-6,8e-6,.1e-6,6,'Nilai dasar sebelum skala resistensi.','physiology',true),
+    param('t2d','p6','p₆','Respons sel beta',.0005,.004,.0001,4,'Sekresi insulin endogen pada T2D.','physiology',true),
+    param('t2d','Gb','Gᵇ','Glukosa basal',100,150,1,0,'Baseline glukosa puasa (mg/dL).','physiology',true),
+    param('t2d','p1','p₁','Glucose effectiveness',.01,.05,.0005,4,'Penurunan glukosa tanpa insulin.'),
+    param('t2d','p2','p₂','Peluruhan efek insulin',.01,.04,.0005,4,'Peluruhan efek insulin di jaringan.'),
+    param('t2d','n','n','Pembersihan insulin',.1,.6,.01,2,'Kecepatan insulin kembali ke baseline.'),
+    param('t2d','p5','p₅','Ambang sel beta',90,150,1,0,'Glukosa saat sekresi insulin meningkat.'),
+    param('t2d','Ib','Iᵇ','Insulin basal',5,25,.5,1,'Baseline insulin (µU/mL).'),
+    param('t2dUi','mealTau','τ makan','Waktu penyerapan makanan',20,90,1,0,'Lebih besar berarti makanan diserap lebih lambat.'),
+  ],
+  diabetes_t2d_pi: [],
+};
+
+PARAMETER_SETS.diabetes_ap = [
+  ...PARAMETER_SETS.diabetes.map(d => ({...d})),
+  param('ap','targetMgDl','Target','Target glukosa',90,160,1,0,'Setpoint artificial pancreas.','controller',true),
+  param('ap','Ti','Ti','Waktu integral',60,600,10,0,'Respons integral controller (menit).','controller',true),
+  param('ap','Td','Td','Waktu derivatif',0,150,5,0,'Respons derivatif controller (menit).','controller',true),
+  param('ap','sensorTau','τ sensor','Lag sensor',1,30,1,0,'Waktu respons sensor glukosa (menit).','controller'),
+  param('ap','derivativeTau','τ derivatif','Filter derivatif',1,20,1,0,'Penyaringan perubahan sensor (menit).','controller'),
+  param('ap','suspendMgDl','Suspend','Batas suspend',55,90,1,0,'Pompa berhenti pada glukosa rendah (mg/dL).','controller'),
+  param('ap','controllerPeriod','Δt','Periode controller',.5,5,.5,1,'Jarak antar pembaruan controller (menit).','controller'),
+  param('ifb','a11','a11','Estimator IFB a11',.90,.999,.001,3,'Koefisien state estimator insulin feedback.','controller'),
+  param('ifb','a21','a21','Estimator IFB a21',0,.05,.001,3,'Koefisien state estimator insulin feedback.','controller'),
+  param('ifb','a31','a31','Estimator IFB a31',0,.005,.0001,4,'Koefisien state estimator insulin feedback.','controller'),
+  param('ifb','a22','a22','Estimator IFB a22',.90,.999,.001,3,'Koefisien state estimator insulin feedback.','controller'),
+  param('ifb','a32','a32','Estimator IFB a32',0,.05,.001,3,'Koefisien state estimator insulin feedback.','controller'),
+  param('ifb','a33','a33','Estimator IFB a33',.90,.999,.001,3,'Koefisien state estimator insulin feedback.','controller'),
+  param('ifb','b1','b1','Estimator IFB b1',.1,2,.01,2,'Koefisien masukan estimator insulin feedback.','controller'),
+  param('ifb','b2','b2','Estimator IFB b2',0,.05,.001,3,'Koefisien masukan estimator insulin feedback.','controller'),
+  param('ifb','b3','b3','Estimator IFB b3',0,.005,.0001,4,'Koefisien masukan estimator insulin feedback.','controller'),
+  param('ifb','g1','g1','Bobot IFB g1',0,1,.01,2,'Bobot state estimator pertama.','controller'),
+  param('ifb','g2','g2','Bobot IFB g2',0,1,.01,2,'Bobot state estimator kedua.','controller'),
+  param('ifb','g3','g3','Bobot IFB g3',0,1,.01,2,'Bobot state estimator ketiga.','controller'),
 ];
 
-/* 3 parameter utama tampil langsung; sisanya (p2, Gb) dalam collapsible
-   <details> — fisiologi & fungsi slider tidak berubah, hanya presentasi. */
-const VISIBLE_PARAM_KEYS = ['p1', 'p3', 'p6'];
+PARAMETER_SETS.diabetes_t2d_pi = [
+  ...PARAMETER_SETS.diabetes_t2d.map(d => ({...d})),
+  param('pi','target','Target','Target glukosa',85,130,1,0,'Setpoint controller PI.','controller',true),
+  param('pi','kp','Kp','Gain proporsional',.005,.10,.001,3,'Respons controller terhadap error glukosa.','controller',true),
+  param('pi','ti','Ti','Waktu integral',60,600,10,0,'Respons integral controller (menit).','controller',true),
+  param('pi','maxUph','Maks','Laju insulin maksimum',2,15,.5,1,'Batas atas sinyal kontrol (U/h).','controller'),
+  param('pi','suspend','Suspend','Batas suspend',55,90,1,0,'Sinyal insulin berhenti di bawah batas ini.','controller'),
+  param('pi','sensorTau','τ sensor','Lag sensor',1,30,1,0,'Waktu respons sensor glukosa (menit).','controller'),
+  param('pi','period','Δt','Periode controller',.5,5,.5,1,'Jarak antar pembaruan PI (menit).','controller'),
+  param('actuator','tmaxI','tmaxI','Penyerapan insulin',30,100,1,0,'Waktu penyerapan insulin subkutan (menit).','controller'),
+  param('actuator','weightKg','BB','Berat badan aktuator',40,120,1,0,'Berat badan subjek model (kg).','controller'),
+  param('actuator','VI','VI','Volume insulin',.06,.20,.01,2,'Volume distribusi insulin (L/kg).','controller'),
+];
+
+const parameterTarget = (scope) => ({ normal:CONFIG, t1d:T1D_PARAMS, t2d:T2D_PARAMS, t2dUi:T2D_UI_PARAMS,
+  ap:AP_CONFIG, pi:T2D_PI_CONFIG, actuator:T2D_PI_ACTUATOR, ifb:IFB_PARAMS })[scope];
+const parameterId = (def) => `${def.scope}.${def.key}`;
+const PARAMETER_DEFAULTS = Object.fromEntries(Object.entries(PARAMETER_SETS).map(([mode, defs]) =>
+  [mode, Object.fromEntries(defs.map(def => [parameterId(def), parameterTarget(def.scope)[def.key]]))]
+));
+const parameterDrafts = Object.fromEntries(Object.entries(PARAMETER_DEFAULTS).map(([mode, values]) => [mode, {...values}]));
+let parameterDirty = false;
+
+function recalculateDerivedParameters(){
+  T1D_PARAMS.kb1 = T1D_PARAMS.ka1 * T1D_PARAMS.SIT;
+  T1D_PARAMS.kb2 = T1D_PARAMS.ka2 * T1D_PARAMS.SID;
+  T1D_PARAMS.kb3 = T1D_PARAMS.ka3 * T1D_PARAMS.SIE;
+  IFB_PARAMS.gSum = IFB_PARAMS.g1 + IFB_PARAMS.g2 + IFB_PARAMS.g3;
+}
+
+function loadModeParameters(modeId){
+  const draft = parameterDrafts[modeId];
+  (PARAMETER_SETS[modeId] || []).forEach(def => { parameterTarget(def.scope)[def.key] = draft[parameterId(def)]; });
+  recalculateDerivedParameters();
+}
+
+function formatParam(def, value){ return Number(value).toFixed(def.decimals); }
 
 function buildParamSliders(){
   const container = document.getElementById('param-sliders');
-  container.innerHTML = '';
-  const rowTemplate = (def) => `
-      <div class="param-row">
-        <div class="param-row-top">
-          <label class="param-name" for="ps-${def.key}"><span class="sym">${def.sym}</span> ${def.name}</label>
-          <div class="param-vals"><output class="cur" id="pv-${def.key}" for="ps-${def.key}">${CONFIG[def.key].toFixed(def.decimals)}</output> <span>(default ${DEFAULT_PARAMS[def.key].toFixed(def.decimals)})</span></div>
-        </div>
-        <input type="range" class="param-slider" id="ps-${def.key}"
-          min="${def.min}" max="${def.max}" step="${def.step}" value="${CONFIG[def.key]}"
-          aria-describedby="pd-${def.key}">
-        <p class="param-desc" id="pd-${def.key}">${def.desc}</p>
-      </div>`;
-
-  const visible   = PARAM_DEFS.filter(d => VISIBLE_PARAM_KEYS.includes(d.key));
-  const collapsed = PARAM_DEFS.filter(d => !VISIBLE_PARAM_KEYS.includes(d.key));
-
-  visible.forEach(def => {
-    container.insertAdjacentHTML('beforeend', rowTemplate(def));
-  });
-
-  if(collapsed.length){
-    container.insertAdjacentHTML('beforeend', `
-      <details class="param-more">
-        <summary>Parameter lainnya (${collapsed.length})</summary>
-        <div class="param-more-body">
-          ${collapsed.map(rowTemplate).join('')}
-        </div>
-      </details>`);
-  }
-  PARAM_DEFS.forEach(def => {
-    document.getElementById('ps-'+def.key).addEventListener('input', (e) => {
-      CONFIG[def.key] = parseFloat(e.target.value);
-      document.getElementById('pv-'+def.key).textContent = CONFIG[def.key].toFixed(def.decimals);
+  const defs = PARAMETER_SETS[currentMode.id] || [];
+  const draft = parameterDrafts[currentMode.id];
+  const makeRow = (def) => {
+    const id = `ps-${currentMode.id}-${def.scope}-${def.key}`;
+    const value = draft[parameterId(def)];
+    const defaultValue = PARAMETER_DEFAULTS[currentMode.id][parameterId(def)];
+    return `<div class="param-row ${value !== defaultValue ? 'is-dirty' : ''}">
+      <div class="param-row-top"><label class="param-name" for="${id}"><span class="sym">${def.sym}</span> ${def.name}</label>
+      <div class="param-vals"><output class="cur" id="pv-${id}" for="${id}">${formatParam(def,value)}</output> <span>(default ${formatParam(def,defaultValue)})</span></div></div>
+      <input type="range" class="param-slider" id="${id}" min="${def.min}" max="${def.max}" step="${def.step}" value="${value}" aria-describedby="pd-${id}">
+      <p class="param-desc" id="pd-${id}">${def.desc}</p></div>`;
+  };
+  const group = (name, label) => {
+    const selected = defs.filter(d => d.group === name);
+    if(!selected.length) return '';
+    const primary = selected.filter(d => d.primary);
+    const more = selected.filter(d => !d.primary);
+    return `<section class="parameter-group"><h3>${label}</h3>${primary.map(makeRow).join('')}${more.length ?
+      `<details class="param-more"><summary>Parameter lainnya (${more.length})</summary><div class="param-more-body">${more.map(makeRow).join('')}</div></details>` : ''}</section>`;
+  };
+  container.innerHTML = group('physiology','Parameter fisiologis') + group('controller','Parameter controller');
+  const effective = currentMode.id === 'diabetes_t2d' || currentMode.id === 'diabetes_t2d_pi'
+    ? `<p class="parameter-derived">p₃ efektif: ${(draft['t2d.p3'] / draft['t2dUi.resistanceScale']).toExponential(3)}</p>` : '';
+  container.insertAdjacentHTML('beforeend', effective);
+  defs.forEach(def => {
+    const id = `ps-${currentMode.id}-${def.scope}-${def.key}`;
+    document.getElementById(id).addEventListener('input', event => {
+      draft[parameterId(def)] = Number(event.target.value);
+      document.getElementById(`pv-${id}`).textContent = formatParam(def, draft[parameterId(def)]);
+      parameterDirty = true;
+      document.getElementById('btn-param-apply').disabled = false;
+      document.getElementById('parameter-feedback').textContent = 'Perubahan belum diterapkan.';
+      event.target.closest('.param-row').classList.toggle('is-dirty', draft[parameterId(def)] !== PARAMETER_DEFAULTS[currentMode.id][parameterId(def)]);
+      if((def.scope === 't2d' && def.key === 'p3') || (def.scope === 't2dUi' && def.key === 'resistanceScale')) buildParamSliders();
     });
   });
+  const subtitle = document.getElementById('param-subtitle');
+  if(subtitle) subtitle.textContent = 'Ubah nilai, lalu terapkan untuk menghitung ulang kondisi awal.';
+  document.getElementById('btn-param-apply').disabled = !parameterDirty;
 }
+
+function applyParameterDraft(){
+  const targets = [CONFIG, T1D_PARAMS, T2D_PARAMS, T2D_UI_PARAMS, AP_CONFIG, T2D_PI_CONFIG, T2D_PI_ACTUATOR, IFB_PARAMS];
+  const previous = targets.map(target => ({...target}));
+  try {
+    const draft = parameterDrafts[currentMode.id];
+    if(currentMode.id === 'diabetes_t2d_pi' && draft['pi.target'] >= draft['t2d.Gb']){
+      throw new Error('Target PI harus berada di bawah glukosa basal T2D agar equilibrium insulin eksternal tetap positif.');
+    }
+    loadModeParameters(currentMode.id);
+    // Memastikan equilibrium dapat dihitung sebelum state UI diganti.
+    if(currentMode.id === 'diabetes') t1dEquilibrium();
+    if(currentMode.id === 'diabetes_ap') apPlantEquilibrium();
+    if(currentMode.id === 'diabetes_t2d_pi') t2dPiTargetEquilibrium(T2D_PI_CONFIG.target, parameterDrafts[currentMode.id]['t2dUi.resistanceScale']);
+    parameterDirty = false;
+    resetSimulation();
+    buildParamSliders();
+    document.getElementById('parameter-feedback').textContent = 'Parameter diterapkan dan simulasi direset.';
+  } catch (error) {
+    targets.forEach((target, index) => Object.assign(target, previous[index]));
+    recalculateDerivedParameters();
+    document.getElementById('parameter-feedback').textContent = error.message || 'Parameter tidak dapat diterapkan: equilibrium tidak ditemukan.';
+  }
+}
+
 function resetParamsToDefault(){
-  Object.assign(CONFIG, DEFAULT_PARAMS);
+  parameterDrafts[currentMode.id] = {...PARAMETER_DEFAULTS[currentMode.id]};
+  parameterDirty = true;
   buildParamSliders();
+  document.getElementById('parameter-feedback').textContent = 'Nilai default siap diterapkan.';
 }
 
 /* =========================================================
@@ -1389,8 +1744,11 @@ function buildModeTabs(){
     if(mode.enabled){
       btn.addEventListener('click', () => {
         currentMode = mode;
+        loadModeParameters(mode.id);
+        parameterDirty = false;
         resetSimulation();
         buildModeTabs();
+        buildParamSliders();
         updateModePanels();
       });
     } else {
@@ -1417,6 +1775,33 @@ function stepCurrentMode(dt){
   if(currentMode.engine === 't2d'){
     const p3eff = T2D_PARAMS.p3 / simState.resistanceScale;
     rk4Step(simState, dt, currentMode, T2D_PARAMS, p3eff);
+    return;
+  }
+  if(currentMode.engine === 't2d_pi'){
+    // Pecah langkah pada tick controller (period 1 menit) — rate konstan sepanjang interval
+    const p3eff = T2D_PARAMS.p3 / simState.resistanceScale;
+    const endT = simState.t + dt;
+    while(simState.t < endT - 1e-9){
+      if(simState.t >= simState.nextControlT - 1e-9){
+        const out = t2dPiControllerStep(simState.piController, simState.y[5], simState.piEq);
+        simState.piRate = out.rate;
+        simState.piSuspended = (out.rate === 0 && simState.y[5] <= T2D_PI_CONFIG.suspend);
+        simState.piInfo = { error: out.error, unsaturated: out.unsaturated };
+        simState.nextControlT += T2D_PI_CONFIG.period;
+      }
+      const h = Math.min(endT - simState.t, simState.nextControlT - simState.t);
+      simState.y = t2dPiRk4Step(simState.t, simState.y, h,
+        simState.activeMeals, simState.piRate, p3eff);
+      simState.t += h;
+    }
+    // UI mirror — renderer membaca G/I/X
+    simState.G = simState.y[0];
+    simState.I = simState.y[2];
+    simState.X = simState.y[1];
+    simState.activeMeals = simState.activeMeals.filter(m =>
+      (simState.t - m.startTime) < 25 * m.tauMeal);
+    simState.mealEvents = simState.mealEvents.filter(m =>
+      (simState.t - m.t) < CONFIG.historyWindowMin);
     return;
   }
   const cfg = {
@@ -1478,6 +1863,7 @@ function loop(now){
   updateSvg(deltaSec);
   updateCards();
   updateApReadout();
+  updateT2dPiReadout();
   updateCharts();
   updateMathPanel();
 
@@ -1489,20 +1875,23 @@ function loop(now){
    ========================================================= */
 function updateModePanels(){
   const parameters = document.querySelector('.parameter-card');
-  if(parameters) parameters.hidden = currentMode.id !== 'normal';
+  if(parameters) parameters.hidden = false;
   document.body.classList.remove('mode-t2d');
   const pid = document.getElementById('pid-panel');
   const t1d = document.getElementById('t1d-controls');
   const ap = document.getElementById('ap-controls');
   const t2d = document.getElementById('t2d-controls');
+  const pi = document.getElementById('t2d-pi-controls');
   if(!pid || !t1d || !ap) return;
   const isT1d = currentMode.id === 'diabetes';
   const isAp = currentMode.id === 'diabetes_ap';
   const isT2d = currentMode.id === 'diabetes_t2d';
-  pid.hidden = !(isT1d || isAp || isT2d);
+  const isT2dPi = currentMode.id === 'diabetes_t2d_pi';
+  pid.hidden = !(isT1d || isAp || isT2d || isT2dPi);
   t1d.hidden = !isT1d;
   ap.hidden = !isAp;
   if(t2d) t2d.hidden = !isT2d;
+  if(pi) pi.hidden = !isT2dPi;
   if(isT1d && simState.eq){
     // sinkronkan toggle basal dengan state (mis. setelah reset)
     const toggle = document.getElementById('basal-toggle');
@@ -1511,12 +1900,36 @@ function updateModePanels(){
   if(isAp && simState.eq){
     const basalEl = document.getElementById('ap-basal');
     if(basalEl) basalEl.textContent = simState.eq.basalUph.toFixed(2) + ' U/h';
+    const targetEl = document.getElementById('ap-target');
+    if(targetEl) targetEl.textContent = AP_CONFIG.targetMgDl.toFixed(0) + ' mg/dL';
+  }
+  updateMealMenuLabels();
+  const bolusFeedback = document.getElementById('bolus-feedback');
+  if(bolusFeedback) bolusFeedback.textContent = '';
+  const bolusInput = document.getElementById('bolus-units');
+  if(bolusInput){
+    bolusInput.value = '2';
+    bolusInput.setCustomValidity('');
+  }
+  if(isT2dPi && simState.piEq){
+    const biasEl = document.getElementById('pi-bias');
+    if(biasEl) biasEl.textContent = simState.piEq.basalUph.toFixed(2) + ' U/h';
+    const slider = document.getElementById('pi-a1-slider');
+    const val = document.getElementById('pi-a1-val');
+    const draftScale = parameterDrafts.diabetes_t2d_pi['t2dUi.resistanceScale'];
+    if(slider) slider.value = draftScale;
+    if(val) val.textContent = draftScale.toFixed(2);
+    const targetEl = document.getElementById('pi-target');
+    if(targetEl) targetEl.textContent = T2D_PI_CONFIG.target.toFixed(0) + ' mg/dL';
+    const noteEl = document.getElementById('pi-note');
+    if(noteEl) noteEl.innerHTML = `Glukosa mulai dari ${T2D_PARAMS.Gb.toFixed(0)} mg/dL tanpa kontrol; PI lalu mengarahkannya ke target ${T2D_PI_CONFIG.target.toFixed(0)} mg/dL. Makanan memakai amplitudo input model, bukan gram karbohidrat. Keluaran controller adalah <strong>sinyal kontrol model</strong>, bukan rekomendasi dosis insulin. Nilai bias tinggi merupakan konsekuensi model minimal (Bagian 14.6).`;
   }
   if(isT2d && simState.resistanceScale !== undefined){
     const slider = document.getElementById('t2d-a1-slider');
     const val = document.getElementById('t2d-a1-val');
-    if(slider) slider.value = simState.resistanceScale;
-    if(val) val.textContent = simState.resistanceScale.toFixed(2);
+    const draftScale = parameterDrafts.diabetes_t2d['t2dUi.resistanceScale'];
+    if(slider) slider.value = draftScale;
+    if(val) val.textContent = draftScale.toFixed(2);
   }
   // subtitle header mencerminkan mode
   const sub = document.querySelector('.subtitle');
@@ -1526,15 +1939,44 @@ function updateModePanels(){
       ? 'Hovorka \u00b7 Diabetes Tipe 1 (terapi manual basal-bolus)'
       : (currentMode.id === 'diabetes_ap'
         ? 'Hovorka + PID-IFB \u00b7 Artificial Pancreas (closed-loop)'
-        : 'Bergman-Pacini G-X-I \u00b7 Parameter Diabetes Tipe 2')));
+        : (currentMode.id === 'diabetes_t2d_pi'
+          ? 'G-X-I + PI \u00b7 T2D dengan kontrol insulin otomatis'
+          : 'Bergman-Pacini G-X-I \u00b7 Parameter Diabetes Tipe 2'))));
+}
+
+function updateMealMenuLabels(){
+  const gramsMode = currentMode.id === 'diabetes' || currentMode.id === 'diabetes_ap';
+  document.querySelectorAll('#meal-options [data-size]').forEach(button => {
+    const size = button.dataset.size;
+    const label = size.charAt(0).toUpperCase() + size.slice(1);
+    button.textContent = gramsMode
+      ? `${label} · ${MEAL_GRAMS[size]} g karbohidrat`
+      : `${label} · amplitudo ${CONFIG.mealAmplitude[size]}`;
+  });
 }
 
 /* Bolus: tambah event { time, units } — engine memasukkan ke depot (Bagian 10.7) */
 document.getElementById('btn-bolus').addEventListener('click', () => {
   if(currentMode.id !== 'diabetes') return;
   const input = document.getElementById('bolus-units');
-  const units = Math.max(0.5, Math.min(10, parseFloat(input.value) || 2));
+  const feedback = document.getElementById('bolus-feedback');
+  const units = Number(input.value);
+  const valid = Number.isFinite(units) && units >= 0.5 && units <= 10 &&
+    Math.abs(units * 2 - Math.round(units * 2)) < 1e-8;
+  input.setCustomValidity(valid ? '' : 'Masukkan bolus 0,5–10 U dengan kelipatan 0,5 U.');
+  if(!valid){
+    if(feedback) feedback.textContent = 'Bolus belum diberikan. Masukkan nilai 0,5–10 U dengan kelipatan 0,5 U.';
+    input.reportValidity();
+    return;
+  }
   simState.boluses.push({ time: simState.t, units });
+  if(feedback) feedback.textContent = `Bolus ${units.toFixed(1)} U dimasukkan ke simulasi.`;
+});
+
+document.getElementById('bolus-units').addEventListener('input', (event) => {
+  event.target.setCustomValidity('');
+  const feedback = document.getElementById('bolus-feedback');
+  if(feedback) feedback.textContent = '';
 });
 
 document.getElementById('basal-toggle').addEventListener('change', (e) => {
@@ -1546,10 +1988,48 @@ document.getElementById('basal-toggle').addEventListener('change', (e) => {
 document.getElementById('t2d-a1-slider').addEventListener('input', (e) => {
   if(currentMode.id !== 'diabetes_t2d') return;
   const scale = Math.max(T2D_RESISTANCE_MIN, Math.min(T2D_RESISTANCE_MAX, parseFloat(e.target.value) || 1));
-  simState.resistanceScale = scale;
+  parameterDrafts.diabetes_t2d['t2dUi.resistanceScale'] = scale;
+  parameterDirty = true;
   const val = document.getElementById('t2d-a1-val');
   if(val) val.textContent = scale.toFixed(2);
+  buildParamSliders();
 });
+
+/* T2D+PI slider resistensi — gain PI ter-tuning utk plant nominal (disclaimer di panel) */
+document.getElementById('pi-a1-slider').addEventListener('input', (e) => {
+  if(currentMode.id !== 'diabetes_t2d_pi') return;
+  const scale = Math.max(T2D_RESISTANCE_MIN, Math.min(T2D_RESISTANCE_MAX, parseFloat(e.target.value) || 1));
+  parameterDrafts.diabetes_t2d_pi['t2dUi.resistanceScale'] = scale;
+  parameterDirty = true;
+  const val = document.getElementById('pi-a1-val');
+  if(val) val.textContent = scale.toFixed(2);
+  buildParamSliders();
+});
+
+/* T2D+PI readout live — dipanggil dari loop */
+function updateT2dPiReadout(){
+  if(currentMode.id !== 'diabetes_t2d_pi') return;
+  const rateEl = document.getElementById('pi-rate');
+  const statusEl = document.getElementById('pi-status');
+  if(rateEl && Number.isFinite(simState.piRate)){
+    rateEl.textContent = simState.piRate.toFixed(3) + ' U/h';
+  }
+  if(statusEl){
+    if(simState.t === 0){
+      statusEl.textContent = 'Siap — menunggu langkah PI';
+      statusEl.classList.remove('suspended');
+    } else if(simState.piSuspended){
+      statusEl.textContent = 'Suspend (glukosa rendah)';
+      statusEl.classList.add('suspended');
+    } else {
+      const status = t2dTargetStatus(simState.G, T2D_PI_CONFIG.target);
+      statusEl.textContent = status.summary === 'target'
+        ? 'Aktif — target'
+        : 'Aktif — ' + status.summary;
+      statusEl.classList.remove('suspended');
+    }
+  }
+}
 
 /* AP readout live — dipanggil dari loop via updateCards */
 function updateApReadout(){
@@ -1671,6 +2151,7 @@ document.getElementById('btn-pause').addEventListener('click', () => {
   setSceneAnimationPaused(simPaused); // jantung ikut berhenti saat simulasi pause
 });
 document.getElementById('btn-param-reset').addEventListener('click', resetParamsToDefault);
+document.getElementById('btn-param-apply').addEventListener('click', applyParameterDraft);
 
 /* ---- Math toggle: aria-expanded + height animation + chart sync ---- */
 let mathAnimTimer = null;
@@ -1746,6 +2227,7 @@ function syncMathCharts(){
 window.addEventListener('load', () => {
   initSvgRefs();
   buildModeTabs();
+  loadModeParameters(currentMode.id);
   buildParamSliders();
   initCharts();
   updateModePanels();

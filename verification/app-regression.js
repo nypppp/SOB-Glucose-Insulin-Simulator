@@ -7,6 +7,7 @@ const source = fs.readFileSync(path.join(__dirname, '../script.js'), 'utf8');
 const context = vm.createContext({ console, assert });
 vm.runInContext(source.slice(0, source.indexOf('let simState = initialState();')) + 'let simState;', context);
 vm.runInContext(source.slice(source.indexOf('function mealD('), source.indexOf('/* =========================================================\n   SCENARIOS')), context);
+vm.runInContext(source.slice(source.indexOf('function triggerMeal(size)'), source.indexOf('function resetSimulation()')), context);
 vm.runInContext(source.slice(source.indexOf('function stepCurrentMode(dt)'), source.indexOf('function loop(now)')), context);
 vm.runInContext(`
 function close(actual, expected, tolerance, label){
@@ -49,18 +50,102 @@ for(const mode of [ModeDiabetes,ModeDiabetesAP]){
   const basal=scenario(mode,0,false);
   close(basal.max,basal.min,1e-8,'basal equilibrium');
 }
-currentMode=ModeNormal;simState=initialState();
-for(let k=0;k<2880;k++)stepCurrentMode(.5);
-close(simState.G,92,1e-10,'Normal basal');
-currentMode=ModeDiabetesT2D;simState=initialState();
-let t2dPeak=simState.G;
-for(let k=0;k<2000;k++){
-  if(k===120)simState.activeMeals.push({startTime:60,A:150,tauMeal:40});
-  stepCurrentMode(.5);
-  assert.ok([simState.G,simState.X,simState.I].every(v=>Number.isFinite(v)&&v>=0));
-  t2dPeak=Math.max(t2dPeak,simState.G);
+function gxiMealScenario(mode,expectedPeak){
+  currentMode=mode;simState=initialState();let peak=simState.G;
+  for(let k=0;k<2000;k++){
+    if(k===120)triggerMeal('sedang');
+    stepCurrentMode(.5);
+    assert.ok([simState.G,simState.X,simState.I].every(v=>Number.isFinite(v)&&v>=0));
+    peak=Math.max(peak,simState.G);
+  }
+  close(peak,expectedPeak,.02,mode.id+' UI meal peak');
+  close(simState.G,mode.id==='normal'?92:117,.01,mode.id+' return to baseline');
+  return peak;
 }
-close(t2dPeak,157.0582,.01,'T2D G-X-I peak');
-close(simState.G,117,.01,'T2D return to baseline');
-console.log('PASS: full bolus, exactly-once delivery, PID tick boundaries, T1D/AP reference responses, Normal and T2D G-X-I baselines.', {manual,ap,t2dPeak});
+const normalPeak=gxiMealScenario(ModeNormal,122.54);
+const t2dPeak=gxiMealScenario(ModeDiabetesT2D,157.0582);
+currentMode=ModeDiabetesT2DPI;simState=initialState();
+let piPeakAfterMeal=0, piNadirAfterMeal=Infinity;
+const piTicks=[];
+const piOutput=t2dPiControllerStep;
+t2dPiControllerStep=(controller,glucose,eq)=>{
+  piTicks.push(simState.t);
+  return piOutput(controller,glucose,eq);
+};
+for(let k=0;k<4800;k++){
+  if(k===720)triggerMeal('sedang');
+  stepCurrentMode(.5);
+  assert.ok(simState.y.slice(0,6).every(v=>Number.isFinite(v)&&v>=0));
+  if(simState.t>=360){
+    piPeakAfterMeal=Math.max(piPeakAfterMeal,simState.G);
+    piNadirAfterMeal=Math.min(piNadirAfterMeal,simState.G);
+  }
+}
+t2dPiControllerStep=piOutput;
+assert.deepEqual(piTicks.slice(0,4),[0,1,2,3],'PI tick boundaries');
+close(piPeakAfterMeal,135.9754,.03,'PI medium meal peak');
+assert.ok(piNadirAfterMeal>70,'PI nadir stays above 70');
+close(simState.G,98.6353,.03,'PI meal final glucose');
+assert.equal(simState.activeMeals.length,0,'PI old meals are cleaned up');
+assert.equal(simState.mealEvents.length,0,'PI old chart markers are cleaned up');
+const piResistance=[];
+for(const resistanceScale of [.5,1,2]){
+  currentMode=ModeDiabetesT2DPI;simState=initialState();
+  simState.resistanceScale=resistanceScale;
+  simState.piEq=t2dPiTargetEquilibrium(T2D_PI_CONFIG.target,resistanceScale);
+  let minG=Infinity,maxRate=0;
+  for(let k=0;k<4800;k++){
+    stepCurrentMode(.5);
+    minG=Math.min(minG,simState.G);
+    maxRate=Math.max(maxRate,simState.piRate);
+  }
+  piResistance.push({resistanceScale,finalG:simState.G,minG,maxRate});
+  assert.ok(minG>=70,'PI resistance sweep avoids hypoglycaemia');
+  close(simState.G,100,1,'PI resistance sweep reaches target');
+}
+const piMealResistance=[];
+for(const resistanceScale of [.5,2]){
+  currentMode=ModeDiabetesT2DPI;simState=initialState();
+  simState.resistanceScale=resistanceScale;
+  simState.piEq=t2dPiTargetEquilibrium(T2D_PI_CONFIG.target,resistanceScale);
+  let minG=Infinity,maxG=0;
+  for(let k=0;k<4800;k++){
+    if(k===720)triggerMeal('sedang');
+    stepCurrentMode(.5);
+    minG=Math.min(minG,simState.G);
+    if(simState.t>=360)maxG=Math.max(maxG,simState.G);
+  }
+  piMealResistance.push({resistanceScale,minG,maxG,finalG:simState.G});
+  assert.ok(minG>=70,'PI meal resistance sweep avoids hypoglycaemia');
+  close(simState.G,100,2,'PI meal resistance sweep recovers');
+}
+currentMode=ModeDiabetesT2DPI;simState=initialState();
+let sliderChangeMinG=Infinity;
+for(let k=0;k<4800;k++){
+  if(k===1000){
+    simState.resistanceScale=2;
+    simState.piEq=t2dPiTargetEquilibrium(T2D_PI_CONFIG.target,2);
+  }
+  stepCurrentMode(.5);
+  sliderChangeMinG=Math.min(sliderChangeMinG,simState.G);
+}
+assert.ok(sliderChangeMinG>=70,'live resistance change avoids hypoglycaemia');
+close(simState.G,100,2,'PI recovers after live resistance change');
+currentMode=ModeDiabetesT2DPI;simState=initialState();
+simState.resistanceScale=2;
+simState.piEq=t2dPiTargetEquilibrium(T2D_PI_CONFIG.target,2);
+let reverseChangeMinG=Infinity;
+for(let k=0;k<4800;k++){
+  if(k===1000){
+    simState.resistanceScale=.5;
+    simState.piEq=t2dPiTargetEquilibrium(T2D_PI_CONFIG.target,.5);
+  }
+  stepCurrentMode(.5);
+  reverseChangeMinG=Math.min(reverseChangeMinG,simState.G);
+}
+assert.ok(reverseChangeMinG>=70,'reverse live resistance change avoids hypoglycaemia');
+close(simState.G,100,2,'PI recovers after reverse live resistance change');
+console.log('PASS: T1D/AP regression; Normal/T2D UI meal inputs; PI tick, meal response, positivity, and event cleanup.',
+  {manual,ap,normalPeak,t2dPeak,piPeakAfterMeal,piResistance,piMealResistance,
+    sliderChange:{minG:sliderChangeMinG,reverseMinG:reverseChangeMinG,finalG:simState.G}});
 `, context);
