@@ -818,26 +818,17 @@ input[type="range"].param-slider{
   padding-left: var(--space-2);
 }
 
-.parameter-actions{
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
-  margin-top: var(--space-4);
-  padding-top: var(--space-4);
-  border-top: 1px dashed var(--line);
-}
-
 .parameter-feedback{
   min-height: 1.4em;
-  margin: 0;
+  margin: var(--space-4) 0 0;
+  padding-top: var(--space-4);
+  border-top: 1px dashed var(--line);
   color: var(--ink-soft);
   font-size: 12px;
 }
 
-.param-apply:disabled{
-  cursor: not-allowed;
-  opacity: .52;
+.parameter-feedback:empty{
+  display: none;
 }
 
 /* AP readout */

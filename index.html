@@ -157,14 +157,11 @@
 
     <section class="dashboard-card parameter-card" aria-labelledby="param-heading">
       <header class="card-header">
-        <div><h2 id="param-heading">Parameter Model</h2><p class="parameter-subtitle" id="param-subtitle">Ubah nilai, lalu terapkan untuk menghitung ulang kondisi awal.</p></div>
+        <div><h2 id="param-heading">Parameter Model</h2><p class="parameter-subtitle" id="param-subtitle">Perubahan diterapkan otomatis; simulasi terus berjalan dengan parameter baru.</p></div>
         <button class="param-reset" id="btn-param-reset" type="button"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;margin-right:2px"><path d="M1 4v6h6"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg> Default</button>
       </header>
       <div id="param-sliders"></div>
-      <div class="parameter-actions">
-        <p class="parameter-feedback" id="parameter-feedback" role="status" aria-live="polite"></p>
-        <button class="ctrl param-apply" id="btn-param-apply" type="button" disabled>Terapkan &amp; Reset</button>
-      </div>
+      <p class="parameter-feedback" id="parameter-feedback" role="status" aria-live="polite"></p>
     </section>
 
     <section class="dashboard-card anatomy-card" aria-labelledby="anatomy-heading">
